@@ -1,0 +1,76 @@
+# OrgPM production-style stack: PostgreSQL, Redis (AOF persistence), API, background worker, web (nginx).
+# Usage:  cp .env.example .env  (edit secrets)  &&  docker compose up -d --build
+#         docker compose exec api node dist/db/seed.js            # base roles/rules + first admin (ADMIN_EMAIL/ADMIN_PASSWORD)
+#         docker compose exec api node dist/db/seed.js --demo     # optional demo data (non-production only)
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-orgpm}
+      POSTGRES_USER: ${POSTGRES_USER:-orgpm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-orgpm} -d ${POSTGRES_DB:-orgpm}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    # AOF persistence so scheduled jobs survive restarts (PostgreSQL remains the source of truth).
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./server
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:-orgpm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-orgpm}
+      REDIS_URL: redis://redis:6379
+      RUN_WORKERS_IN_API: "false"
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  worker:
+    build: ./server
+    restart: unless-stopped
+    command: ["node", "dist/worker.js"]
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:-orgpm}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-orgpm}
+      REDIS_URL: redis://redis:6379
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  web:
+    build: ./web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  redisdata:
+  uploads:

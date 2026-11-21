@@ -1,0 +1,51 @@
+# Render Blueprint — single web service (API + scheduler worker + built SPA) and a Key Value (Redis) instance.
+# The PostgreSQL database already exists on Render: set DATABASE_URL in the dashboard to its *Internal Database URL*.
+# Secrets are never committed: every `sync: false` value is entered in the Render dashboard.
+services:
+  - type: web
+    name: orgpm
+    runtime: node
+    plan: free
+    buildCommand: cd web && npm ci && npm run build && cd ../server && npm ci --include=dev && npm run build
+    startCommand: cd server && node dist/index.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false            # Internal Database URL of the Render Postgres instance
+      - key: DATABASE_SSL
+        value: auto            # internal URL → no TLS needed; external *.render.com URL → TLS
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: orgpm-redis
+          property: connectionString
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: SERVE_WEB
+        value: "true"
+      - key: RUN_WORKERS_IN_API
+        value: "true"          # scheduler/escalation workers in-process (use a Background Worker on paid plans)
+      - key: APP_URL
+        sync: false            # e.g. https://orgpm.onrender.com
+      - key: CORS_ORIGINS
+        sync: false            # same as APP_URL
+      - key: DEFAULT_TIMEZONE
+        value: Asia/Kolkata
+      - key: ADMIN_EMAIL
+        sync: false            # first Super Admin (created only when the users table is empty)
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: UPLOAD_DIR
+        value: uploads         # NOTE: Render's disk is ephemeral on free plans; attach a disk for durable uploads
+
+  - type: keyvalue
+    name: orgpm-redis
+    plan: free
+    maxmemoryPolicy: noeviction
+    ipAllowList: []            # internal connections only
