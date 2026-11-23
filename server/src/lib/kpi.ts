@@ -17,10 +17,11 @@ import { db } from '../db/knex';
  *  performance_score 0–100 composite = 35% on-time rate + 25% quality + 20% (1 − revision rate)
  *                    + 20% throughput (weighted output vs. team median, capped at 100%)
  */
-export interface KpiFilter { from: string; to: string; userIds?: number[] | null; departmentId?: number; projectId?: number }
+export interface KpiFilter { from: string; to: string; userIds?: number[] | null; departmentId?: number; projectId?: number; includeInactive?: boolean }
 
 export async function userKpis(f: KpiFilter) {
-  const base = db('users as u').whereNull('u.deleted_at').where('u.is_active', true);
+  const base = db('users as u').whereNull('u.deleted_at');
+  if (!f.includeInactive) base.where('u.is_active', true);
   if (f.userIds) base.whereIn('u.id', f.userIds);
   if (f.departmentId) base.where('u.department_id', f.departmentId);
   const proj = f.projectId ? 'AND t.project_id = ' + Number(f.projectId) : '';

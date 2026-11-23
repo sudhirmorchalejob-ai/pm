@@ -5,12 +5,16 @@ import { logger } from '../lib/logger';
 import { config } from '../config';
 import { createRedis } from '../lib/redis';
 import { getSetting } from '../lib/settings';
-import { generateRecurringTasks, markOverdue, runEscalations } from './escalation';
+import { forEachOrg, generateRecurringTasks, markOverdue, runEscalations } from './escalation';
+import { runInOrg } from '../db/knex';
+import { generateChecklistsInOrg, runChecklistEscalationsInOrg, runChecklistRemindersInOrg } from '../questionnaire/engine';
+import { autoGenerateEodInOrg } from '../questionnaire/eod';
 import { getQueues, QUEUE } from './queues';
 import { deliverLog, fireSchedule, notify, sweepSchedules } from './service';
 
 /** Remind users in the configured roles who haven't submitted today's daily report. */
-export async function dailyReportReminder(now = new Date()) {
+export const dailyReportReminder = (now = new Date()) => forEachOrg(() => dailyReportReminderInOrg(now));
+async function dailyReportReminderInOrg(now: Date) {
   const time: string = await getSetting('daily_report_reminder_time');
   if (!time) return 0;
   const tz: string = await getSetting('default_timezone');
@@ -47,6 +51,10 @@ export async function startWorkers() {
         case 'escalations': await markOverdue(); return runEscalations();
         case 'recurring-tasks': return generateRecurringTasks();
         case 'daily-report-reminder': return dailyReportReminder();
+        case 'checklists': return forEachOrg(() => generateChecklistsInOrg());
+        case 'generate-checklists': return runInOrg(job.data.orgId, () => generateChecklistsInOrg());
+        case 'checklist-reminders': return (await forEachOrg(runChecklistRemindersInOrg)) + (await forEachOrg(runChecklistEscalationsInOrg));
+        case 'eod-auto': return forEachOrg(() => autoGenerateEodInOrg());
       }
     }, { connection, prefix: config.QUEUE_PREFIX, concurrency: 1 }),
   ];
@@ -59,6 +67,10 @@ export async function startWorkers() {
   await maintenance.upsertJobScheduler('escalations', { every: 60_000 }, { name: 'escalations' });
   await maintenance.upsertJobScheduler('recurring-tasks', { every: 5 * 60_000 }, { name: 'recurring-tasks' });
   await maintenance.upsertJobScheduler('daily-report-reminder', { every: 60_000 }, { name: 'daily-report-reminder' });
+  // Daily questionnaire: checklist generation (idempotent), reminders + escalations, automatic EOD reports
+  await maintenance.upsertJobScheduler('checklists', { every: 5 * 60_000 }, { name: 'checklists' });
+  await maintenance.upsertJobScheduler('checklist-reminders', { every: 60_000 }, { name: 'checklist-reminders' });
+  await maintenance.upsertJobScheduler('eod-auto', { every: 60_000 }, { name: 'eod-auto' });
   logger.info('background workers started');
   return workers;
 }

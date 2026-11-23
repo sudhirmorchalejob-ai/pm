@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { KeyRound, Plus, UserPlus } from 'lucide-react';
+import { ArrowRightLeft, KeyRound, Pencil, Plus, Power, UserPlus, Users as UsersIcon } from 'lucide-react';
 import { api, ApiError } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { fmtDate, fromNow, humanize } from '../lib/format';
+import { fmtDate, fmtDateTime, fromNow, humanize } from '../lib/format';
 import { useAction, useApi, useDebounced } from '../lib/hooks';
 import { Avatar, Card, confirm, DataTable, Empty, Field, Loading, Modal, PageHeader, Pagination, SearchInput, Select, StatusBadge, Tabs, UserPicker } from '../components/ui';
 
@@ -31,18 +31,79 @@ function Departments() {
   const nav = useNavigate();
   const [inactive, setInactive] = useState(false);
   const [edit, setEdit] = useState<any>(null);
+  const [detail, setDetail] = useState<number | null>(null);
   const { data = [], isLoading } = useApi<any[]>(['departments', inactive], '/org/departments', { includeInactive: inactive ? 'true' : undefined });
   const save = useAction((d: any) => d.id ? api(`/org/departments/${d.id}`, { method: 'PATCH', body: d.body }) : api('/org/departments', { body: d.body }), { invalidate: [['departments']], success: 'Saved', onSuccess: () => setEdit(null) });
   return (
     <Card title={<label className="flex items-center gap-2 text-sm font-normal"><input type="checkbox" checked={inactive} onChange={(e) => setInactive(e.target.checked)} /> Show inactive</label>}
       actions={can('org.manage') && <button className="btn-primary btn-sm" onClick={() => setEdit({})}><Plus className="h-4 w-4" /> Department</button>} pad={false}>
-      {isLoading ? <Loading /> : <div className="px-4 sm:px-0"><DataTable rows={data} onRowClick={(d: any) => can('org.manage') ? setEdit(d) : nav(`/monitoring/departments/${d.id}`)} columns={[
+      {isLoading ? <Loading /> : <div className="px-4 sm:px-0"><DataTable rows={data} onRowClick={(d: any) => setDetail(d.id)} columns={[
         { key: 'name', header: 'Department', render: (d: any) => <span className="font-medium">{d.name}<span className="muted block text-xs font-normal">{d.code}</span></span> },
         { key: 'hod_name', header: 'HOD' }, { key: 'employee_count', header: 'Employees' }, { key: 'team_count', header: 'Teams' }, { key: 'open_tasks', header: 'Open tasks' },
         { key: 'is_active', header: 'Status', render: (d: any) => <StatusBadge status={d.is_active ? 'active' : 'cancelled'} label={d.is_active ? 'Active' : 'Inactive'} /> },
+        ...(can('org.manage') ? [{ key: 'edit', header: '', render: (d: any) => <button className="btn-ghost btn-sm" aria-label={`Edit ${d.name}`} onClick={(e) => { e.stopPropagation(); setEdit(d); }}><Pencil className="h-4 w-4" /></button> }] : []),
       ]} /></div>}
       <DeptForm item={edit} onClose={() => setEdit(null)} onSave={(body) => save.mutate({ id: edit?.id, body })} />
+      {detail && <DepartmentDetail id={detail} onClose={() => setDetail(null)} onEdit={(d) => { setDetail(null); setEdit(d); }} onMonitor={() => nav(`/monitoring/departments/${detail}`)} />}
     </Card>
+  );
+}
+
+function DepartmentDetail({ id, onClose, onEdit, onMonitor }: { id: number; onClose: () => void; onEdit: (d: any) => void; onMonitor: () => void }) {
+  const { can } = useAuth();
+  const [tab, setTab] = useState('members');
+  const [ids, setIds] = useState<number[]>([]);
+  const [reason, setReason] = useState('');
+  const { data: d, isLoading } = useApi<any>(['department', id], `/org/departments/${id}`);
+  const add = useAction(() => api(`/org/departments/${id}/members`, { body: { user_ids: ids, reason: reason || undefined } }),
+    { invalidate: [['department', id], ['departments'], ['users'], ['directory']], success: (r: any) => `${r.moved} employee(s) assigned`, onSuccess: () => { setIds([]); setReason(''); } });
+  return (
+    <Modal open onClose={onClose} title={d ? `${d.name} (${d.code})` : 'Department'} size="xl"
+      footer={d && <>
+        {can('monitoring.departments') && <button className="btn-secondary" onClick={onMonitor}>Open monitoring</button>}
+        {can('org.manage') && <button className="btn-primary" onClick={() => onEdit(d)}><Pencil className="h-4 w-4" /> Edit department</button>}
+      </>}>
+      {isLoading || !d ? <Loading /> : (
+        <>
+          <div className="mb-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+            <div><span className="muted block text-xs">Head of department</span>{d.hod_name ?? '—'}</div>
+            <div><span className="muted block text-xs">Active members</span>{d.members.filter((m: any) => m.is_active).length}</div>
+            <div><span className="muted block text-xs">Teams</span>{d.teams.length}</div>
+            <div><span className="muted block text-xs">Status</span>{d.is_active ? 'Active' : 'Inactive'}</div>
+          </div>
+          {d.description && <p className="muted mb-3 text-sm">{d.description}</p>}
+          <Tabs value={tab} onChange={setTab} tabs={[{ value: 'members', label: 'Members', count: d.members.length }, { value: 'teams', label: 'Teams & leaders', count: d.teams.length }, { value: 'history', label: 'History', count: d.history.length }]} />
+          {tab === 'members' && (
+            <>
+              {(can('org.manage') || can('users.manage')) && d.is_active && (
+                <div className="mb-3 grid gap-2 rounded-lg border p-3 dark:border-slate-700 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_auto]">
+                  <UserPicker multi value={ids} onChange={setIds} placeholder="Assign employees to this department…" exclude={d.members.map((m: any) => m.id)} />
+                  <input className="input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason (optional)" aria-label="Reason" />
+                  <button className="btn-primary" disabled={!ids.length || add.isPending} onClick={() => add.mutate(undefined)}><UsersIcon className="h-4 w-4" /> Assign</button>
+                </div>
+              )}
+              <DataTable rows={d.members} empty={<Empty title="No employees in this department" />} columns={[
+                { key: 'name', header: 'Employee', render: (m: any) => <span className="flex items-center gap-2"><Avatar name={m.name} size="sm" /><span>{m.name}<span className="muted block text-xs">{m.employee_code}</span></span></span> },
+                { key: 'role_name', header: 'Role' }, { key: 'team_name', header: 'Team', render: (m: any) => m.team_name ?? '—' }, { key: 'designation', header: 'Designation', render: (m: any) => m.designation ?? '—' },
+                { key: 'member_since', header: 'Member since', render: (m: any) => (m.member_since ? fmtDate(m.member_since) : '—') },
+                { key: 'is_active', header: 'Status', render: (m: any) => <StatusBadge status={m.is_active ? 'active' : 'cancelled'} label={m.is_active ? humanize(m.employment_status) : 'Deactivated'} /> },
+              ]} />
+            </>
+          )}
+          {tab === 'teams' && <DataTable rows={d.teams} empty={<Empty title="No teams" hint="Create teams on the Teams tab." />} columns={[
+            { key: 'name', header: 'Team' }, { key: 'leader_name', header: 'Team leader', render: (t: any) => t.leader_name ?? '—' }, { key: 'member_count', header: 'Members' },
+          ]} />}
+          {tab === 'history' && <DataTable rows={d.history} empty={<Empty title="No history yet" />} columns={[
+            { key: 'user_name', header: 'Employee' },
+            { key: 'team_name', header: 'Team', render: (h: any) => h.team_name ?? '—' },
+            { key: 'effective_from', header: 'From', render: (h: any) => fmtDateTime(h.effective_from) },
+            { key: 'effective_to', header: 'Until', render: (h: any) => (h.effective_to ? fmtDateTime(h.effective_to) : <span className="text-emerald-600">current</span>) },
+            { key: 'reason', header: 'Reason', render: (h: any) => h.reason ?? '—' },
+            { key: 'changed_by_name', header: 'Changed by', render: (h: any) => h.changed_by_name ?? 'System' },
+          ]} />}
+        </>
+      )}
+    </Modal>
   );
 }
 
@@ -108,19 +169,29 @@ function Users() {
   const [dept, setDept] = useState('');
   const [role, setRole] = useState('');
   const [status, setStatus] = useState('');
+  const [active, setActive] = useState('true');
   const [page, setPage] = useState(1);
   const [edit, setEdit] = useState<any>(null);
+  const [transfer, setTransfer] = useState<any>(null);
   const { data: depts = [] } = useApi<any[]>(['departments'], '/org/departments');
   const { data: roles = [] } = useApi<any[]>(['roles'], '/org/roles');
-  const { data, isLoading } = useApi<any>(['users'], '/org/users', { q: dq, department_id: dept || undefined, role: role || undefined, status: status || undefined, page });
+  const { data, isLoading } = useApi<any>(['users'], '/org/users', { q: dq, department_id: dept || undefined, role: role || undefined, status: status || undefined, active: active || undefined, page });
+  const toggleActive = useAction(async (u: any) => {
+    const reason = await confirm({ title: u.is_active ? `Deactivate ${u.name}?` : `Reactivate ${u.name}?`, danger: u.is_active, confirmLabel: u.is_active ? 'Deactivate' : 'Reactivate',
+      message: u.is_active ? 'They lose access and stop receiving tasks, questions and notifications. All their tasks, answers, reports and history are kept.' : 'They can sign in again and will receive assignments and checklists.',
+      input: { label: 'Reason (kept in the employee’s history)', required: true } });
+    if (!reason || reason === true) return null;
+    return api(`/org/users/${u.id}/${u.is_active ? 'deactivate' : 'activate'}`, { body: { reason } });
+  }, { invalidate: [['users'], ['directory'], ['user']], success: 'Employee status updated' });
   const reset = useAction((id: number) => api(`/org/users/${id}/reset-password`, { method: 'POST' }), { onSuccess: (r: any) => confirm({ title: 'Temporary password', message: <>Share securely with the employee — they must change it at first sign-in:<pre className="mt-2 rounded bg-slate-100 p-2 dark:bg-slate-800">{r.temporaryPassword}</pre></>, confirmLabel: 'Done' }) });
   return (
     <>
-      <Card className="mb-4"><div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_200px_200px_160px_auto]">
+      <Card className="mb-4"><div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_180px_180px_150px_150px_auto]">
         <SearchInput value={q} onChange={(v) => { setQ(v); setPage(1); }} placeholder="Name, email or code" />
         <Select value={dept} onChange={setDept} placeholder="All departments" options={depts.map((d: any) => ({ value: d.id, label: d.name }))} />
         <Select value={role} onChange={setRole} placeholder="All roles" options={roles.map((r: any) => ({ value: r.key, label: r.name }))} />
-        <Select value={status} onChange={setStatus} placeholder="Any status" options={['active', 'on_leave', 'notice', 'exited'].map((s) => ({ value: s, label: humanize(s) }))} />
+        <Select value={status} onChange={setStatus} placeholder="Any employment status" options={['active', 'on_leave', 'notice', 'exited'].map((s) => ({ value: s, label: humanize(s) }))} />
+        <Select value={active} onChange={(v) => { setActive(v); setPage(1); }} placeholder="Active & deactivated" options={[{ value: 'true', label: 'Active' }, { value: 'false', label: 'Deactivated' }]} aria-label="Account status" />
         {can('users.manage') && <button className="btn-primary" onClick={() => setEdit({})}><UserPlus className="h-4 w-4" /> Employee</button>}
       </div></Card>
       <Card pad={false}>{isLoading ? <Loading /> : <div className="px-4 sm:px-0">
@@ -128,14 +199,39 @@ function Users() {
           { key: 'name', header: 'Employee', render: (u: any) => <span className="flex items-center gap-2"><Avatar name={u.name} size="sm" /><span><span className="block font-medium">{u.name}</span><span className="muted text-xs">{u.employee_code} · {u.email}</span></span></span> },
           { key: 'role_name', header: 'Role' }, { key: 'department_name', header: 'Department' }, { key: 'team_name', header: 'Team' }, { key: 'designation', header: 'Designation' },
           { key: 'manager_name', header: 'Reports to' }, { key: 'open_tasks', header: 'Open tasks' },
-          { key: 'employment_status', header: 'Status', render: (u: any) => <StatusBadge status={u.employment_status === 'exited' ? 'cancelled' : u.employment_status === 'active' ? 'active' : 'paused'} label={humanize(u.employment_status)} /> },
+          { key: 'employment_status', header: 'Status', render: (u: any) => !u.is_active ? <StatusBadge status="cancelled" label="Deactivated" /> : <StatusBadge status={u.employment_status === 'exited' ? 'cancelled' : u.employment_status === 'active' ? 'active' : 'paused'} label={humanize(u.employment_status)} /> },
           { key: 'last_login_at', header: 'Last login', render: (u: any) => u.last_login_at ? fromNow(u.last_login_at) : 'never' },
-          ...(can('users.manage') ? [{ key: 'pw', header: '', render: (u: any) => <button className="btn-ghost btn-sm" title="Reset password" onClick={async (e) => { e.stopPropagation(); if (await confirm({ title: `Reset password for ${u.name}?`, message: 'All their sessions will be signed out.' })) reset.mutate(u.id); }}><KeyRound className="h-4 w-4" /></button> }] : []),
+          ...(can('users.manage') ? [{ key: 'pw', header: '', render: (u: any) => (
+            <span className="flex gap-0.5" onClick={(e) => e.stopPropagation()}>
+              {u.is_active && <button className="btn-ghost btn-sm" title="Transfer department" aria-label={`Transfer ${u.name}`} onClick={() => setTransfer(u)}><ArrowRightLeft className="h-4 w-4" /></button>}
+              <button className="btn-ghost btn-sm" title={u.is_active ? 'Deactivate' : 'Reactivate'} aria-label={u.is_active ? `Deactivate ${u.name}` : `Reactivate ${u.name}`} onClick={() => toggleActive.mutate(u)}><Power className={`h-4 w-4 ${u.is_active ? 'text-emerald-600' : 'text-slate-400'}`} /></button>
+              {u.is_active && <button className="btn-ghost btn-sm" title="Reset password" aria-label={`Reset password for ${u.name}`} onClick={async () => { if (await confirm({ title: `Reset password for ${u.name}?`, message: 'All their sessions will be signed out.' })) reset.mutate(u.id); }}><KeyRound className="h-4 w-4" /></button>}
+            </span>) }] : []),
         ]} />
         <div className="pb-4"><Pagination page={page} pageSize={data.pageSize} total={data.total} onPage={setPage} /></div>
       </div>}</Card>
       <UserForm item={edit} onClose={() => setEdit(null)} />
+      {transfer && <TransferForm user={transfer} onClose={() => setTransfer(null)} />}
     </>
+  );
+}
+
+function TransferForm({ user, onClose }: { user: any; onClose: () => void }) {
+  const { data: depts = [] } = useApi<any[]>(['departments'], '/org/departments');
+  const { data: teams = [] } = useApi<any[]>(['teams'], '/org/teams');
+  const [f, setF] = useState<any>({ department_id: '', team_id: '', manager_id: undefined, reason: '' });
+  const save = useAction(() => api(`/org/users/${user.id}/transfer`, { body: { department_id: Number(f.department_id), team_id: f.team_id ? Number(f.team_id) : null, ...(f.manager_id !== undefined ? { manager_id: f.manager_id } : {}), reason: f.reason } }),
+    { invalidate: [['users'], ['directory'], ['user'], ['departments']], success: `${user.name} transferred`, onSuccess: onClose });
+  return (
+    <Modal open onClose={onClose} title={`Transfer ${user.name}`} footer={<><button className="btn-secondary" onClick={onClose}>Cancel</button><button className="btn-primary" disabled={!f.department_id || f.reason.trim().length < 3 || save.isPending} onClick={() => save.mutate(undefined)}>Transfer</button></>}>
+      <p className="muted mb-3 text-sm">Currently: {user.department_name ?? 'no department'}{user.team_name ? ` · ${user.team_name}` : ''}. The previous department stays in their history.</p>
+      <div className="grid gap-3">
+        <Field label="New department"><Select value={f.department_id} onChange={(v) => setF({ ...f, department_id: v, team_id: '' })} placeholder="Select" options={depts.filter((d: any) => d.id !== user.department_id || true).map((d: any) => ({ value: d.id, label: d.name }))} /></Field>
+        <Field label="Team (optional)"><Select value={f.team_id} onChange={(v) => setF({ ...f, team_id: v })} placeholder="No team" options={teams.filter((t: any) => t.department_id === Number(f.department_id)).map((t: any) => ({ value: t.id, label: t.name }))} /></Field>
+        <Field label="New reporting manager (optional)"><UserPicker value={f.manager_id ?? null} onChange={(v) => setF({ ...f, manager_id: v })} exclude={[user.id]} /></Field>
+        <Field label="Reason (required)"><input className="input" value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })} placeholder="e.g. Moved to the implementation team" /></Field>
+      </div>
+    </Modal>
   );
 }
 
@@ -197,6 +293,16 @@ function UserForm({ item, onClose }: { item: any; onClose: () => void }) {
                 );
               })}
             </div>
+          </div>
+        )}
+        {detail?.department_history?.length > 0 && (
+          <div className="sm:col-span-2 lg:col-span-3"><span className="label">Department history</span>
+            <ul className="text-xs">{detail.department_history.map((h: any) => <li key={h.id}>{fmtDate(h.effective_from)} → {h.effective_to ? fmtDate(h.effective_to) : 'now'}: <b>{h.department_name ?? 'No department'}</b>{h.team_name ? ` · ${h.team_name}` : ''}{h.reason ? ` — ${h.reason}` : ''} ({h.changed_by_name ?? 'system'})</li>)}</ul>
+          </div>
+        )}
+        {detail?.status_history?.length > 0 && (
+          <div className="sm:col-span-2 lg:col-span-3"><span className="label">Activation history</span>
+            <ul className="text-xs">{detail.status_history.map((h: any) => <li key={h.id}>{fmtDateTime(h.changed_at)}: <b>{h.is_active ? 'Active' : 'Deactivated'}</b> · {humanize(h.employment_status)}{h.reason ? ` — ${h.reason}` : ''} ({h.changed_by_name ?? 'system'})</li>)}</ul>
           </div>
         )}
         {detail?.reporting_history?.length > 0 && (

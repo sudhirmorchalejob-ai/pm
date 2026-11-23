@@ -37,6 +37,7 @@ function General() {
   const save = useAction(() => api('/settings', { method: 'PUT', body: {
     organization_name: f.organization_name, default_timezone: f.default_timezone, reminders_on_task_close: f.reminders_on_task_close, overload_threshold_percent: Number(f.overload_threshold_percent),
     daily_report_roles: f.daily_report_roles, daily_report_reminder_time: f.daily_report_reminder_time, working_days: f.working_days.map(Number),
+    checklist_channels: f.checklist_channels, checklist_notify_new_questions: f.checklist_notify_new_questions,
   } }), { invalidate: [['settings']], success: 'Settings saved' });
   if (isLoading || !f) return <Loading />;
   return (
@@ -48,6 +49,8 @@ function General() {
         <Field label="Overload threshold (% of weekly capacity)"><input className="input" type="number" min={50} max={300} value={f.overload_threshold_percent} onChange={(e) => setF({ ...f, overload_threshold_percent: e.target.value })} /></Field>
         <Field label="Daily report reminder time (default timezone, blank = off)"><input className="input" type="time" value={f.daily_report_reminder_time} onChange={(e) => setF({ ...f, daily_report_reminder_time: e.target.value })} /></Field>
         <div><span className="label">Working days</span><Chips multi value={f.working_days.map(String)} onChange={(v) => setF({ ...f, working_days: v })} options={['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d, i) => ({ value: String(i + 1), label: d }))} /></div>
+        <div className="md:col-span-2"><span className="label">Checklist notifications (assignments, reminders, escalations, EOD ready)</span><Chips multi value={f.checklist_channels ?? ['in_app']} onChange={(v) => setF({ ...f, checklist_channels: v.length ? v : ['in_app'] })} options={CHANNEL_OPTS} /></div>
+        <label className="flex items-center gap-2 text-sm md:col-span-2"><input type="checkbox" checked={!!f.checklist_notify_new_questions} onChange={(e) => setF({ ...f, checklist_notify_new_questions: e.target.checked })} /> Notify employees when new questions are added to their checklist</label>
         <div className="md:col-span-2"><span className="label">Roles required to submit daily reports</span><Chips multi value={f.daily_report_roles} onChange={(v) => setF({ ...f, daily_report_roles: v })} options={roles.map((r: any) => ({ value: r.key, label: r.name }))} /></div>
       </div>
       <button className="btn-primary mt-5" onClick={() => save.mutate(undefined)}>Save settings</button>

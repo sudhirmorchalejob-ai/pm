@@ -11,6 +11,8 @@ import { badRequest, conflict, forbidden, notFound } from '../lib/errors';
 import { applySort, idParam, paginate, parse, zBoolQ, zDate, zId, zOptId, zOptStr, zPage } from '../lib/http';
 import { isValidTimezone } from '../lib/recurrence';
 import { passwordSchema } from './auth.routes';
+import { assertActiveUsers, recordDepartmentChange, recordStatusChange } from '../lib/employees';
+import { dropUntouchedChecklists, requestChecklistSync } from '../questionnaire/engine';
 
 export const router = Router();
 
@@ -38,8 +40,9 @@ const deptSchema = z.object({
 router.post('/departments', requirePerm('org.manage'), async (req, res) => {
   const body = parse(deptSchema, req.body);
   if (await db('departments').where({ code: body.code }).first()) throw conflict('Department code already exists');
+  await assertActiveUsers([body.hod_id], 'a head-of-department role');
   const [row] = await db('departments').insert(body).returning('*');
-  if (body.hod_id) await db('users').where({ id: body.hod_id }).update({ department_id: row.id });
+  if (body.hod_id) await moveToDepartment([body.hod_id], row.id, me(req).id, `Appointed head of ${row.name}`);
   await audit(req, { action: 'department.created', entityType: 'department', entityId: row.id, after: row, summary: row.name });
   res.status(201).json(row);
 });
@@ -49,11 +52,67 @@ router.patch('/departments/:id', requirePerm('org.manage'), async (req, res) => 
   const body = parse(deptSchema.partial(), req.body);
   const before = await db('departments').where({ id }).first();
   if (!before) throw notFound();
+  if (body.hod_id && body.hod_id !== before.hod_id) await assertActiveUsers([body.hod_id], 'a head-of-department role');
   const [row] = await db('departments').where({ id }).update({ ...body, updated_at: db.fn.now() }).returning('*');
-  if (body.hod_id) { await db('users').where({ id: body.hod_id }).update({ department_id: id }); invalidateUserCache(body.hod_id); }
+  if (body.hod_id && body.hod_id !== before.hod_id) await moveToDepartment([body.hod_id], id, me(req).id, `Appointed head of ${row.name}`);
   const d = diff(before, body);
   await audit(req, { action: body.is_active === false ? 'department.deactivated' : 'department.updated', entityType: 'department', entityId: id, before: d.before, after: d.after });
   res.json(row);
+});
+
+/** Move employees into a department (keeps their team only if it belongs to that department) and record history. */
+async function moveToDepartment(userIds: number[], departmentId: number, actorId: number, reason: string) {
+  const moved: number[] = [];
+  for (const uid of userIds) {
+    const u = await db('users').where({ id: uid }).whereNull('deleted_at').first('id', 'department_id', 'team_id');
+    if (!u) continue;
+    let teamId = u.team_id;
+    if (teamId) {
+      const t = await db('teams').where({ id: teamId }).first('department_id');
+      if (t?.department_id !== departmentId) teamId = null;
+    }
+    if (u.department_id === departmentId && teamId === u.team_id) continue;
+    await db('users').where({ id: uid }).update({ department_id: departmentId, team_id: teamId, updated_at: db.fn.now() });
+    await recordDepartmentChange(uid, departmentId, teamId, actorId, reason);
+    invalidateUserCache(uid);
+    moved.push(uid);
+  }
+  if (moved.length) await requestChecklistSync();
+  return moved;
+}
+
+router.get('/departments/:id', requirePerm('org.view', 'users.view'), async (req, res) => {
+  const id = idParam(req);
+  const u = me(req);
+  if (u.scope !== 'organization' && !can(u, 'org.manage') && u.departmentId !== id) throw notFound();
+  const d = await db('departments as d').leftJoin('users as h', 'h.id', 'd.hod_id').where('d.id', id).whereNull('d.deleted_at').first('d.*', 'h.name as hod_name');
+  if (!d) throw notFound();
+  const [teams, members, history] = await Promise.all([
+    db('teams as t').leftJoin('users as l', 'l.id', 't.leader_id').where('t.department_id', id).where('t.is_active', true)
+      .select('t.id', 't.name', 't.leader_id', 'l.name as leader_name', db.raw('(SELECT count(*) FROM users x WHERE x.team_id = t.id AND x.deleted_at IS NULL AND x.is_active)::int AS member_count')).orderBy('t.name'),
+    db('users as x').join('roles as r', 'r.id', 'x.role_id').leftJoin('teams as t', 't.id', 'x.team_id').leftJoin('designations as g', 'g.id', 'x.designation_id')
+      .where('x.department_id', id).whereNull('x.deleted_at')
+      .select('x.id', 'x.name', 'x.employee_code', 'x.is_active', 'x.employment_status', 'r.name as role_name', 't.name as team_name', 'g.title as designation',
+        db.raw('(SELECT min(h.effective_from) FROM department_history h WHERE h.user_id = x.id AND h.department_id = x.department_id AND h.effective_to IS NULL) AS member_since'))
+      .orderBy([{ column: 'x.is_active', order: 'desc' }, { column: 'x.name' }]),
+    db('department_history as h').join('users as x', 'x.id', 'h.user_id').leftJoin('users as c', 'c.id', 'h.changed_by').leftJoin('teams as t', 't.id', 'h.team_id')
+      .where('h.department_id', id).orderBy('h.effective_from', 'desc').limit(300)
+      .select('h.id', 'h.user_id', 'x.name as user_name', 'h.effective_from', 'h.effective_to', 'h.reason', 't.name as team_name', 'c.name as changed_by_name'),
+  ]);
+  res.json({ ...d, teams, members, history });
+});
+
+/** Assign (transfer) several employees to this department at once. */
+router.post('/departments/:id/members', requirePerm('org.manage', 'users.manage'), async (req, res) => {
+  const id = idParam(req);
+  const dept = await db('departments').where({ id }).whereNull('deleted_at').first();
+  if (!dept) throw notFound();
+  if (!dept.is_active) throw badRequest('This department is inactive');
+  const { user_ids, reason } = parse(z.object({ user_ids: z.array(zId).min(1).max(500), reason: z.string().trim().max(500).optional() }), req.body);
+  await assertActiveUsers(user_ids, 'a department assignment');
+  const moved = await moveToDepartment(user_ids, id, me(req).id, reason || `Assigned to ${dept.name}`);
+  for (const uid of moved) await audit(req, { action: 'user.department_transferred', entityType: 'user', entityId: uid, summary: `→ ${dept.name}${reason ? `: ${reason}` : ''}`, after: { department_id: id } });
+  res.json({ moved: moved.length });
 });
 
 // ===================================================================== designations
@@ -100,8 +159,13 @@ async function assertDeptManager(req: any, deptId: number) {
 router.post('/teams', async (req, res) => {
   const body = parse(teamSchema, req.body);
   await assertDeptManager(req, body.department_id);
+  await assertActiveUsers([body.leader_id], 'a team-leader role');
   const [row] = await db('teams').insert(body).returning('*');
-  if (body.leader_id) await db('users').where({ id: body.leader_id }).update({ team_id: row.id });
+  if (body.leader_id) {
+    await db('users').where({ id: body.leader_id }).update({ team_id: row.id, department_id: row.department_id });
+    await recordDepartmentChange(body.leader_id, row.department_id, row.id, me(req).id, `Appointed leader of team ${row.name}`);
+    invalidateUserCache(body.leader_id);
+  }
   await audit(req, { action: 'team.created', entityType: 'team', entityId: row.id, summary: row.name });
   res.status(201).json(row);
 });
@@ -111,8 +175,13 @@ router.patch('/teams/:id', async (req, res) => {
   if (!before) throw notFound();
   await assertDeptManager(req, before.department_id);
   const body = parse(teamSchema.partial(), req.body);
+  if (body.leader_id && body.leader_id !== before.leader_id) await assertActiveUsers([body.leader_id], 'a team-leader role');
   const [row] = await db('teams').where({ id }).update({ ...body, updated_at: db.fn.now() }).returning('*');
-  if (body.leader_id) { await db('users').where({ id: body.leader_id }).update({ team_id: id }); invalidateUserCache(body.leader_id); }
+  if (body.leader_id && body.leader_id !== before.leader_id) {
+    await db('users').where({ id: body.leader_id }).update({ team_id: id, department_id: row.department_id });
+    await recordDepartmentChange(body.leader_id, row.department_id, id, me(req).id, `Appointed leader of team ${row.name}`);
+    invalidateUserCache(body.leader_id);
+  }
   const d = diff(before, body);
   await audit(req, { action: 'team.updated', entityType: 'team', entityId: id, before: d.before, after: d.after });
   res.json(row);
@@ -123,8 +192,10 @@ router.post('/teams/:id/members', async (req, res) => {
   if (!team) throw notFound();
   await assertDeptManager(req, team.department_id);
   const { user_ids } = parse(z.object({ user_ids: z.array(zId).min(1) }), req.body);
+  await assertActiveUsers(user_ids, 'a team assignment');
   await db('users').whereIn('id', user_ids).update({ team_id: id, department_id: team.department_id, updated_at: db.fn.now() });
-  user_ids.forEach((u) => invalidateUserCache(u));
+  for (const uid of user_ids) { await recordDepartmentChange(uid, team.department_id, id, me(req).id, `Added to team ${team.name}`); invalidateUserCache(uid); }
+  await requestChecklistSync();
   await audit(req, { action: 'team.members_added', entityType: 'team', entityId: id, after: { user_ids } });
   res.json({ ok: true });
 });
@@ -133,7 +204,8 @@ router.delete('/teams/:id/members/:userId', async (req, res) => {
   const team = await db('teams').where({ id }).first();
   if (!team) throw notFound();
   await assertDeptManager(req, team.department_id);
-  await db('users').where({ id: idParam(req, 'userId'), team_id: id }).update({ team_id: null });
+  const removed = await db('users').where({ id: idParam(req, 'userId'), team_id: id }).update({ team_id: null });
+  if (removed) await recordDepartmentChange(idParam(req, 'userId'), team.department_id, null, me(req).id, `Removed from team ${team.name}`);
   await audit(req, { action: 'team.member_removed', entityType: 'team', entityId: id, after: { user_id: idParam(req, 'userId') } });
   res.json({ ok: true });
 });
@@ -144,7 +216,7 @@ router.get('/skills', async (_req, res) => {
 });
 router.post('/skills', requirePerm('users.manage', 'org.manage'), async (req, res) => {
   const { name } = parse(z.object({ name: z.string().trim().min(1).max(80) }), req.body);
-  const [row] = await db('skills').insert({ name }).onConflict('name').merge().returning('*');
+  const [row] = await db('skills').insert({ name }).onConflict(['organization_id', 'name']).merge().returning('*');
   res.status(201).json(row);
 });
 
@@ -169,6 +241,7 @@ const userListQ = z.object({
   team_id: zId.optional(),
   role: z.string().optional(),
   status: z.enum(['active', 'on_leave', 'notice', 'exited']).optional(),
+  active: zBoolQ,
   sort: z.string().optional(),
 });
 
@@ -189,6 +262,7 @@ router.get('/users', requirePerm('users.view'), async (req, res) => {
   if (f.team_id) q.where('u.team_id', f.team_id);
   if (f.role) q.where('r.key', f.role);
   if (f.status) q.where('u.employment_status', f.status);
+  if (f.active !== undefined) q.where('u.is_active', f.active);
   applySort(q, f.sort, { name: 'u.name', code: 'u.employee_code', department: 'd.name', joined: 'u.joining_date', role: 'r.rank' }, 'name:asc');
   res.json(await paginate(q, f.page, f.pageSize));
 });
@@ -202,15 +276,18 @@ router.get('/users/:id', requirePerm('users.view'), async (req, res) => {
     .first('u.id', 'u.employee_code', 'u.name', 'u.email', 'u.phone', 'u.department_id', 'd.name as department_name', 'u.team_id', 't.name as team_name',
       'u.designation_id', 'g.title as designation', 'u.manager_id', 'm.name as manager_name', 'r.key as role', 'r.name as role_name', 'u.role_id',
       'u.employment_status', 'u.joining_date', 'u.exit_date', 'u.is_active', 'u.timezone', 'u.capacity_hours_per_week', 'u.created_at', 'u.last_login_at');
-  const [skills, history, reports, projects] = await Promise.all([
+  const [skills, history, reports, projects, departmentHistory, statusHistory] = await Promise.all([
     db('user_skills as us').join('skills as s', 's.id', 'us.skill_id').where('us.user_id', id).select('s.id', 's.name', 'us.level'),
     db('reporting_hierarchy as h').leftJoin('users as m', 'm.id', 'h.manager_id').leftJoin('users as c', 'c.id', 'h.changed_by')
       .where('h.user_id', id).orderBy('h.effective_from', 'desc').select('h.*', 'm.name as manager_name', 'c.name as changed_by_name'),
     db('users').where({ manager_id: id }).whereNull('deleted_at').select('id', 'name', 'employee_code'),
     db('project_members as pm').join('projects as p', 'p.id', 'pm.project_id').where('pm.user_id', id).whereNull('p.deleted_at')
       .select('p.id', 'p.code', 'p.name', 'p.status', 'pm.role_in_project', 'pm.allocation_percent'),
+    db('department_history as h').leftJoin('departments as d', 'd.id', 'h.department_id').leftJoin('teams as t', 't.id', 'h.team_id').leftJoin('users as c', 'c.id', 'h.changed_by')
+      .where('h.user_id', id).orderBy('h.effective_from', 'desc').select('h.*', 'd.name as department_name', 't.name as team_name', 'c.name as changed_by_name'),
+    db('employee_status_history as h').leftJoin('users as c', 'c.id', 'h.changed_by').where('h.user_id', id).orderBy('h.changed_at', 'desc').select('h.*', 'c.name as changed_by_name'),
   ]);
-  res.json({ ...u, skills, reporting_history: history, direct_reports: reports, projects });
+  res.json({ ...u, skills, reporting_history: history, direct_reports: reports, projects, department_history: departmentHistory, status_history: statusHistory });
 });
 
 const userSchema = z.object({
@@ -255,6 +332,9 @@ router.post('/users', requirePerm('users.manage'), async (req, res) => {
   }).returning(['id', 'name', 'email', 'employee_code']);
   await db('user_notification_preferences').insert({ user_id: row.id }).onConflict('user_id').ignore();
   if (body.manager_id) await recordManagerChange(row.id, body.manager_id, me(req).id);
+  await recordDepartmentChange(row.id, body.department_id ?? null, body.team_id ?? null, me(req).id, 'Joined');
+  await recordStatusChange(row.id, body.is_active ?? true, body.employment_status ?? 'active', me(req).id, 'Employee created');
+  await requestChecklistSync();
   await audit(req, { action: 'user.created', entityType: 'user', entityId: row.id, summary: `${row.name} <${row.email}>`, after: rest });
   res.status(201).json({ ...row, temporaryPassword: body.password ? undefined : tempPassword });
 });
@@ -272,12 +352,86 @@ router.patch('/users/:id', requirePerm('users.manage'), async (req, res) => {
   if (body.employment_status === 'exited' && !body.exit_date && !before.exit_date) body.exit_date = new Date().toISOString().slice(0, 10);
   const patch: any = { ...body, updated_at: db.fn.now() };
   if (body.employment_status === 'exited') patch.is_active = false;
+  if (patch.is_active === true && !before.is_active && body.employment_status === undefined && before.employment_status === 'exited') patch.employment_status = 'active';
   await db('users').where({ id }).update(patch);
   if (body.manager_id !== undefined && body.manager_id !== before.manager_id) await recordManagerChange(id, body.manager_id ?? null, me(req).id);
-  if (patch.is_active === false) await revokeAllForUser(id);
+  const newDept = body.department_id !== undefined ? body.department_id ?? null : before.department_id;
+  const newTeam = body.team_id !== undefined ? body.team_id ?? null : before.team_id;
+  const transferred = (newDept !== before.department_id || newTeam !== before.team_id)
+    && await recordDepartmentChange(id, newDept, newTeam, me(req).id, 'Changed in employee profile');
+  const newActive = patch.is_active ?? before.is_active;
+  const newStatus = patch.employment_status ?? before.employment_status;
+  const statusChanged = newActive !== before.is_active || newStatus !== before.employment_status;
+  if (statusChanged) await recordStatusChange(id, newActive, newStatus, me(req).id, 'Changed in employee profile');
+  if (newActive === false && before.is_active) { await revokeAllForUser(id); await dropUntouchedChecklists(id); }
   invalidateUserCache(id);
+  if (transferred || statusChanged) await requestChecklistSync();
   const d = diff(before, body);
-  await audit(req, { action: d.changed.includes('role_id') ? 'user.role_changed' : 'user.updated', entityType: 'user', entityId: id, before: d.before, after: d.after });
+  const action = newActive !== before.is_active ? (newActive ? 'user.activated' : 'user.deactivated')
+    : d.changed.includes('role_id') ? 'user.role_changed' : transferred ? 'user.department_transferred' : 'user.updated';
+  await audit(req, { action, entityType: 'user', entityId: id, before: d.before, after: d.after });
+  res.json({ ok: true });
+});
+
+/** Deactivate: no new assignments, questions or notifications; every historical record is kept. */
+router.post('/users/:id/deactivate', requirePerm('users.manage'), async (req, res) => {
+  const id = idParam(req);
+  const { reason } = parse(z.object({ reason: z.string().trim().min(3).max(1000) }), req.body);
+  if (id === me(req).id) throw badRequest('You cannot deactivate your own account');
+  const before = await db('users').where({ id }).whereNull('deleted_at').first();
+  if (!before) throw notFound();
+  const target = await db('roles').where({ id: before.role_id }).first('rank');
+  if (target.rank >= me(req).rank && me(req).roleKey !== 'super_admin') throw forbidden('Cannot deactivate a user at or above your level');
+  if (!before.is_active) throw badRequest('This employee is already deactivated');
+  await db('users').where({ id }).update({ is_active: false, updated_at: db.fn.now() });
+  await recordStatusChange(id, false, before.employment_status, me(req).id, reason);
+  await revokeAllForUser(id);
+  await dropUntouchedChecklists(id);
+  invalidateUserCache(id);
+  await requestChecklistSync();
+  await audit(req, { action: 'user.deactivated', entityType: 'user', entityId: id, summary: `${before.name}: ${reason}`, before: { is_active: true }, after: { is_active: false, reason } });
+  res.json({ ok: true });
+});
+
+router.post('/users/:id/activate', requirePerm('users.manage'), async (req, res) => {
+  const id = idParam(req);
+  const { reason } = parse(z.object({ reason: z.string().trim().min(3).max(1000) }), req.body);
+  const before = await db('users').where({ id }).whereNull('deleted_at').first();
+  if (!before) throw notFound();
+  if (before.is_active) throw badRequest('This employee is already active');
+  const status = before.employment_status === 'exited' ? 'active' : before.employment_status;
+  await db('users').where({ id }).update({ is_active: true, employment_status: status, exit_date: before.employment_status === 'exited' ? null : before.exit_date, failed_logins: 0, locked_until: null, updated_at: db.fn.now() });
+  await recordStatusChange(id, true, status, me(req).id, reason);
+  invalidateUserCache(id);
+  await requestChecklistSync();
+  await audit(req, { action: 'user.activated', entityType: 'user', entityId: id, summary: `${before.name}: ${reason}`, before: { is_active: false, employment_status: before.employment_status }, after: { is_active: true, employment_status: status, reason } });
+  res.json({ ok: true });
+});
+
+/** Department transfer with reason; history keeps the previous department and team. */
+router.post('/users/:id/transfer', requirePerm('users.manage'), async (req, res) => {
+  const id = idParam(req);
+  const b = parse(z.object({ department_id: zId, team_id: zOptId, manager_id: zOptId, reason: z.string().trim().min(3).max(1000) }), req.body);
+  const before = await db('users').where({ id }).whereNull('deleted_at').first();
+  if (!before) throw notFound();
+  if (!before.is_active) throw badRequest('Deactivated employees cannot be transferred; reactivate them first');
+  const dept = await db('departments').where({ id: b.department_id }).where('is_active', true).whereNull('deleted_at').first();
+  if (!dept) throw badRequest('Unknown or inactive department');
+  if (b.team_id) {
+    const t = await db('teams').where({ id: b.team_id }).first('department_id');
+    if (t?.department_id !== b.department_id) throw badRequest('The team must belong to the target department');
+  }
+  if (b.manager_id === id) throw badRequest('A user cannot report to themselves');
+  if (b.manager_id) await assertActiveUsers([b.manager_id], 'direct reports');
+  if (before.department_id === b.department_id && (b.team_id ?? null) === before.team_id) throw badRequest('The employee is already in this department and team');
+  await db('users').where({ id }).update({ department_id: b.department_id, team_id: b.team_id ?? null, ...(b.manager_id !== undefined ? { manager_id: b.manager_id } : {}), updated_at: db.fn.now() });
+  await recordDepartmentChange(id, b.department_id, b.team_id ?? null, me(req).id, b.reason);
+  if (b.manager_id !== undefined && b.manager_id !== before.manager_id) await recordManagerChange(id, b.manager_id ?? null, me(req).id);
+  invalidateUserCache(id);
+  await requestChecklistSync();
+  const from = before.department_id ? (await db('departments').where({ id: before.department_id }).first('name'))?.name : 'no department';
+  await audit(req, { action: 'user.department_transferred', entityType: 'user', entityId: id, summary: `${before.name}: ${from} → ${dept.name} (${b.reason})`,
+    before: { department_id: before.department_id, team_id: before.team_id }, after: { department_id: b.department_id, team_id: b.team_id ?? null } });
   res.json({ ok: true });
 });
 

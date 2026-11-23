@@ -4,7 +4,7 @@ import fs from 'fs';
 import express from 'express';
 import { createApp } from './app';
 import { config } from './config';
-import { migrate } from './db/migrate';
+import { checkTenantSafety, migrate } from './db/migrate';
 import { seedBase } from './db/seed';
 import { logger } from './lib/logger';
 import { attachRealtime } from './lib/realtime';
@@ -12,6 +12,7 @@ import { startWorkers } from './notifications/worker';
 
 async function main() {
   await migrate();
+  await checkTenantSafety();
   // Idempotent: ensures roles/permissions/default rules exist and bootstraps the first
   // Super Admin from ADMIN_EMAIL / ADMIN_PASSWORD when the users table is empty.
   if (process.env.SEED_BASE_ON_START !== 'false') await seedBase();

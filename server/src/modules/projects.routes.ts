@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { db, Tx } from '../db/knex';
 import { can, me, requirePerm } from '../auth/middleware';
 import { assertCanManageProject, canManageProject, loadVisibleProject, scopeProjects, scopeTasks } from '../auth/scope';
+import { assertActiveUsers } from '../lib/employees';
 import { audit, diff } from '../lib/audit';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors';
 import { applySort, idParam, paginate, parse, zBoolQ, zCsv, zDate, zId, zOptId, zOptStr, zPage, zPriority } from '../lib/http';
@@ -198,6 +199,7 @@ async function managed(req: any) {
 router.post('/:id/members', async (req, res) => {
   const p = await managed(req);
   const { members } = parse(z.object({ members: z.array(z.object({ user_id: zId, role_in_project: z.string().max(60).default('member'), allocation_percent: z.number().int().min(0).max(100).default(100) })).min(1) }), req.body);
+  await assertActiveUsers(members.map((m) => m.user_id), 'project assignments');
   await db('project_members').insert(members.map((m) => ({ ...m, project_id: p.id, added_by: me(req).id }))).onConflict(['project_id', 'user_id']).merge(['role_in_project', 'allocation_percent']);
   await audit(req, { action: 'project.members_added', entityType: 'project', entityId: p.id, after: members });
   res.json({ ok: true });

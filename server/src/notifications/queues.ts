@@ -1,5 +1,6 @@
 import { Queue } from 'bullmq';
 import { config } from '../config';
+import { afterCommit } from '../db/knex';
 import { redis } from '../lib/redis';
 
 export const QUEUE = {
@@ -30,8 +31,11 @@ export function getQueues() {
  * rescheduled reminder gets a new job and the stale one is ignored by the worker.
  */
 export async function enqueueScheduleFire(scheduleId: number, runAt: Date) {
-  const delay = Math.max(0, runAt.getTime() - Date.now());
-  await getQueues().schedules.add('fire', { scheduleId, runAt: runAt.toISOString() }, { jobId: `s-${scheduleId}-${runAt.getTime()}`, delay });
+  // Deferred until the surrounding tenant transaction commits, so the worker always sees the row.
+  await afterCommit(async () => {
+    const delay = Math.max(0, runAt.getTime() - Date.now());
+    await getQueues().schedules.add('fire', { scheduleId, runAt: runAt.toISOString() }, { jobId: `s-${scheduleId}-${runAt.getTime()}`, delay });
+  });
 }
 
 export async function removeScheduleJob(scheduleId: number, runAt: Date | null) {
@@ -42,5 +46,5 @@ export async function removeScheduleJob(scheduleId: number, runAt: Date | null) 
 
 export async function enqueueDeliveries(logIds: number[]) {
   if (!logIds.length) return;
-  await getQueues().deliveries.addBulk(logIds.map((id) => ({ name: 'deliver', data: { logId: id }, opts: { jobId: `d-${id}` } })));
+  await afterCommit(() => getQueues().deliveries.addBulk(logIds.map((id) => ({ name: 'deliver', data: { logId: id }, opts: { jobId: `d-${id}` } }))));
 }

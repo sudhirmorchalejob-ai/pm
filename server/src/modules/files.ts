@@ -5,8 +5,8 @@ import multer from 'multer';
 import { Router } from 'express';
 import { config } from '../config';
 import { db } from '../db/knex';
-import { me } from '../auth/middleware';
-import { loadVisibleProject, loadVisibleTask } from '../auth/scope';
+import { can, me } from '../auth/middleware';
+import { loadVisibleProject, loadVisibleTask, scopeUsers } from '../auth/scope';
 import { badRequest, notFound } from '../lib/errors';
 import { idParam } from '../lib/http';
 
@@ -72,9 +72,16 @@ router.get('/:id/download', async (req, res) => {
   const u = me(req);
   const ta = await db('task_attachments').where({ file_id: id }).first('task_id');
   const pd = await db('project_documents').where({ file_id: id }).first('project_id');
+  // checklist attachments: the employee, or a supervisor allowed to see their checklists
+  const ck = !ta && !pd ? await db('checklist_answer_revisions as r').join('checklist_items as i', 'i.id', 'r.item_id').join('checklists as c', 'c.id', 'i.checklist_id')
+    .where((w) => w.whereRaw('? = ANY(r.file_ids)', [id]).orWhereRaw(`i.answer_type = 'file' AND r.answer @> ?::jsonb`, [JSON.stringify([id])]))
+    .first('c.user_id') : null;
   if (ta) await loadVisibleTask(u, ta.task_id);
   else if (pd) await loadVisibleProject(u, pd.project_id);
-  else if (file.uploaded_by !== u.id) throw notFound();
+  else if (ck) {
+    const allowed = ck.user_id === u.id || ((can(u, 'checklists.monitor') || can(u, 'eod.view')) && await scopeUsers(db('users as u').where('u.id', ck.user_id), u).first('u.id'));
+    if (!allowed) throw notFound();
+  } else if (file.uploaded_by !== u.id) throw notFound();
   res.setHeader('Content-Type', file.mime_type);
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.original_name)}"`);

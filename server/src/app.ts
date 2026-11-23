@@ -27,6 +27,9 @@ import { router as reports } from './modules/reports.routes';
 import { router as planning } from './modules/planning.routes';
 import { router as misc } from './modules/misc.routes';
 import { router as files } from './modules/files';
+import { router as questions } from './modules/questions.routes';
+import { router as checklists } from './modules/checklists.routes';
+import { router as eod } from './modules/eod.routes';
 
 export function createApp() {
   const app = express();
@@ -64,6 +67,9 @@ export function createApp() {
   mount('/api/dashboard', dashboard, 'Dashboard');
   mount('/api/reports', reports, 'Reports');
   mount('/api/files', files, 'Files');
+  mount('/api/questions', questions, 'Question builder');
+  mount('/api/checklists', checklists, 'Daily checklists');
+  mount('/api/eod', eod, 'EOD reports');
   mount('/api', planning, 'Planning');
   mount('/api', misc, 'Misc');
 

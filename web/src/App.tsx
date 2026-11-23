@@ -28,6 +28,10 @@ const Organization = lazy(() => import('./pages/Organization'));
 const Audit = lazy(() => import('./pages/Audit'));
 const SettingsPage = lazy(() => import('./pages/Settings'));
 const Profile = lazy(() => import('./pages/Profile'));
+const MyChecklist = lazy(() => import('./pages/checklist/MyChecklist'));
+const QuestionBuilder = lazy(() => import('./pages/checklist/QuestionBuilder'));
+const Compliance = lazy(() => import('./pages/checklist/Compliance'));
+const EodReports = lazy(() => import('./pages/checklist/EodReports'));
 
 function Guard({ perms, children }: { perms?: string[]; children: ReactNode }) {
   const { can } = useAuth();
@@ -67,6 +71,10 @@ export function App() {
           <Route path="/audit" element={<Guard perms={['audit.view']}><Audit /></Guard>} />
           <Route path="/settings" element={<Guard perms={['settings.manage', 'roles.manage', 'notifications.rules.manage', 'escalations.manage']}><SettingsPage /></Guard>} />
           <Route path="/profile" element={<Profile />} />
+          <Route path="/checklist" element={<Guard perms={['checklists.submit']}><MyChecklist /></Guard>} />
+          <Route path="/questions" element={<Guard perms={['questions.manage']}><QuestionBuilder /></Guard>} />
+          <Route path="/compliance" element={<Guard perms={['checklists.monitor']}><Compliance /></Guard>} />
+          <Route path="/eod" element={<Guard perms={['eod.view', 'eod.generate']}><EodReports /></Guard>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Suspense>

@@ -1,4 +1,4 @@
-import { db } from '../db/knex';
+import { activeOrgIds, db, runInOrg } from '../db/knex';
 import { audit } from '../lib/audit';
 import { logger } from '../lib/logger';
 import { nextOccurrence } from '../lib/recurrence';
@@ -9,7 +9,8 @@ import { loadRule, notify } from './service';
 const OPEN_STATUSES = ['not_started', 'in_progress', 'on_hold', 'blocked', 'revision_required'];
 
 /** Mark tasks whose deadline has passed as overdue (and clear the flag when moved forward). */
-export async function markOverdue() {
+export const markOverdue = () => forEachOrg(markOverdueInOrg);
+async function markOverdueInOrg() {
   const newly = await db('tasks').whereNull('deleted_at').where('is_overdue', false).where('is_recurring_template', false)
     .whereIn('status', OPEN_STATUSES).where('deadline', '<', new Date()).update({ is_overdue: true, updated_at: db.fn.now() }).returning('id');
   for (const r of newly) {
@@ -27,7 +28,8 @@ export async function markOverdue() {
  * (task, rule, deadline_snapshot) guarantees each level fires exactly once per deadline —
  * and fires again if the deadline is later moved and missed again.
  */
-export async function runEscalations() {
+export const runEscalations = () => forEachOrg(runEscalationsInOrg);
+async function runEscalationsInOrg() {
   const rules = await db('escalation_rules').where({ is_active: true }).orderBy('level');
   let count = 0;
   for (const rule of rules) {
@@ -79,7 +81,8 @@ function fmtDur(mins: number) {
  * Recurring tasks: each template spawns an instance 24h before its next occurrence
  * (the occurrence time is the instance deadline). Unique (parent, deadline) prevents duplicates.
  */
-export async function generateRecurringTasks() {
+export const generateRecurringTasks = () => forEachOrg(generateRecurringTasksInOrg);
+async function generateRecurringTasksInOrg() {
   const templates = await db('tasks').where({ is_recurring_template: true }).whereNull('deleted_at').whereNot('status', 'cancelled')
     .whereNotNull('recurrence_next_at').where('recurrence_next_at', '<=', new Date(Date.now() + 24 * 3600_000));
   let created = 0;
@@ -117,4 +120,17 @@ export async function runMaintenanceSafely(name: string, fn: () => Promise<unkno
     logger.error({ e, name }, 'maintenance failed');
     throw e;
   }
+}
+
+/**
+ * Run a maintenance function once per active organization, each inside its own
+ * org-scoped transaction (RLS + default organization_id), and sum the results.
+ * A failure in one tenant does not stop the others.
+ */
+export async function forEachOrg(fn: () => Promise<number>): Promise<number> {
+  let total = 0;
+  for (const orgId of await activeOrgIds()) {
+    try { total += await runInOrg(orgId, fn); } catch (e) { logger.error({ e, orgId }, 'tenant maintenance failed'); }
+  }
+  return total;
 }

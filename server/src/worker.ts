@@ -1,4 +1,4 @@
-import { migrate } from './db/migrate';
+import { checkTenantSafety, migrate } from './db/migrate';
 import { logger } from './lib/logger';
 import { startWorkers } from './notifications/worker';
 
@@ -10,6 +10,7 @@ import { startWorkers } from './notifications/worker';
  */
 async function main() {
   await migrate();
+  await checkTenantSafety();
   const workers = await startWorkers();
   const shutdown = async () => {
     logger.info('worker shutting down');

@@ -45,7 +45,7 @@ describe('custom reminder scheduler', () => {
   it('fires once at the due time, delivers in-app, and prevents duplicates', async () => {
     const emp = await as('employee@orgpm.dev');
     const me = await userId('employee@orgpm.dev');
-    const soon = new Date(Date.now() + 61_000);
+    const soon = new Date(Date.now() + 180_000); // minute-resolution input: keep well clear of 'now'
     const local = zoned(soon, 'Europe/London');
     const r = await emp.post('/notifications/schedules').send({ title: 'Stand-up prep', message: 'Prepare notes', schedule_type: 'one_time', date: local.date, time: local.time, timezone: 'Europe/London', channels: ['in_app', 'email'] });
     expect(r.status).toBe(201);
@@ -120,7 +120,7 @@ describe('custom reminder scheduler', () => {
 describe('delivery retries & failure alerts', () => {
   it('marks retried, then failed after max attempts and alerts admins', async () => {
     const me = await userId('employee@orgpm.dev');
-    const [log] = await db('notification_logs').insert({ dedupe_key: `t:${Date.now()}`, user_id: me, channel: 'email', title: 'Retry me', body: 'x', occurrence_at: new Date() }).returning('*');
+    const [log] = await db('notification_logs').insert({ organization_id: 1, dedupe_key: `t:${Date.now()}`, user_id: me, channel: 'email', title: 'Retry me', body: 'x', occurrence_at: new Date() }).returning('*');
     const spy = vi.spyOn(channelHandlers, 'email').mockRejectedValue(new Error('SMTP timeout'));
     await expect(deliverLog(log.id, 1)).rejects.toThrow('SMTP timeout');
     expect((await db('notification_logs').where({ id: log.id }).first())).toMatchObject({ status: 'retried', attempts: 1 });
@@ -135,7 +135,7 @@ describe('delivery retries & failure alerts', () => {
     const emp = await as('aditya@orgpm.dev');
     await emp.put('/notifications/preferences').send({ email: false });
     const me = await userId('aditya@orgpm.dev');
-    const [log] = await db('notification_logs').insert({ dedupe_key: `p:${Date.now()}`, user_id: me, channel: 'email', title: 'Pref', body: 'x', occurrence_at: new Date() }).returning('*');
+    const [log] = await db('notification_logs').insert({ organization_id: 1, dedupe_key: `p:${Date.now()}`, user_id: me, channel: 'email', title: 'Pref', body: 'x', occurrence_at: new Date() }).returning('*');
     expect(await deliverLog(log.id, 1)).toBe('skipped');
     expect((await db('notification_logs').where({ id: log.id }).first()).last_error).toMatch(/preferences/);
   });

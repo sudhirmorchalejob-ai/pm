@@ -1,8 +1,9 @@
 # OrgPM — Enterprise Project & Organizational Management
 
-A full-stack platform for running an organization's work in one place: departments, HODs, teams and employees;
+A multi-tenant full-stack platform — any number of organizations register from the sign-in page and get isolated
+workspaces (PostgreSQL row-level security) — for running an organization's work in one place: departments, HODs, teams and employees;
 active and **future** projects; tasks with an approval-gated workflow; daily work reports; employee and department
-monitoring; a **persistent server-side notification scheduler** (any date, any time, any timezone, recurring,
+monitoring; a **dynamic daily questionnaire** (question builder, department templates, automated checklists with revisions, compliance dashboard and automatic **End-of-Day reports**); a **persistent server-side notification scheduler** (any date, any time, any timezone, recurring,
 deadline-relative); escalations; approvals; reports with Excel/PDF export; calendar, Gantt and resource planning;
 meetings; and a complete audit trail. Responsive from phones to large monitors, light and dark themes.
 
@@ -38,11 +39,13 @@ docker-compose.yml      production-style stack
 
 Prerequisites: Node 22+, PostgreSQL 14+, Redis 6.2+.
 
+The app must connect as a **non-superuser** role (superusers bypass the row-level security that isolates tenants):
+
 ```bash
-createdb orgpm
-cd server && cp .env.example .env      # adjust DATABASE_URL / REDIS_URL / secrets
+psql -U postgres -c "CREATE ROLE orgpm_app LOGIN" -c "CREATE DATABASE orgpm OWNER orgpm_app" -c "CREATE DATABASE orgpm_test OWNER orgpm_app"
+cd server && cp .env.example .env      # DATABASE_URL=postgres://orgpm_app@localhost:5432/orgpm, REDIS_URL, secrets
 npm install
-npm run seed -- --reset --demo         # migrate + roles/rules + demo organization
+npm run seed -- --reset --demo         # migrate + roles/rules + demo organization (tenant #1)
 npm run dev                            # API on :4000 (RUN_WORKERS_IN_API=true runs the scheduler in-process)
 ```
 
@@ -50,7 +53,7 @@ npm run dev                            # API on :4000 (RUN_WORKERS_IN_API=true r
 cd web && npm install && npm run dev   # http://localhost:5173 (proxies /api and /socket.io to :4000)
 ```
 
-Demo accounts (development seed only) all use the password defined by `DEMO_PASSWORD` in the seed (default `Password@123`):
+Use **Register organization** on the sign-in page to create a new, empty tenant. Demo accounts (development seed only, all in the demo tenant) all use the password defined by `DEMO_PASSWORD` in the seed (default `Password@123`):
 `admin@orgpm.dev` (Super Admin), `director@orgpm.dev`, `pm@orgpm.dev`, `hod.it@orgpm.dev`, `tl.dev@orgpm.dev`,
 `employee@orgpm.dev`, `viewer@orgpm.dev` (Management Viewer). Never run `--demo` against production.
 
@@ -61,12 +64,12 @@ To run the worker as its own process (recommended in production): set `RUN_WORKE
 ## Tests
 
 ```bash
-cd server && npm test                       # 47 unit + integration tests (needs Postgres DB "orgpm_test" + Redis)
+cd server && npm test                       # 78 unit + integration tests (needs DB "orgpm_test" owned by orgpm_app + Redis)
 cd web && npx playwright install chromium   # once
 E2E_BASE_URL=http://localhost:5173 npx playwright test   # e2e against a running, demo-seeded stack
 ```
 
-Test coverage includes authentication (refresh rotation + reuse detection, lockout), RBAC and data scoping per role,
+Test coverage includes the questionnaire (frequency/DST rules, answer validation, conditional questions, idempotent checklist generation, drafts/submission, append-only revisions with stale-edit protection, scoped monitoring, one-time reminders and escalations, EOD consolidation/exports, automatic EOD once per day, department transfers and deactivation), organization registration and cross-tenant isolation (data, settings, permission matrix, dashboards), authentication (refresh rotation + reuse detection, lockout), RBAC and data scoping per role,
 organization CRUD, the full assign → progress → submit → revision → approve workflow, extensions, dependencies and
 cycle detection, future project approval + conversion, budget approvals, daily reports, KPI reports and exports,
 custom reminders (timezone conversion, exact-once firing under concurrency, recurring advance, pause/resume/reschedule/cancel,
@@ -81,6 +84,7 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): Render Blueprint (`render.yaml`) o
 ## Documentation
 
 - [Architecture & data model (ERD)](docs/ARCHITECTURE.md)
+- [Daily questionnaire, checklists & EOD reports](docs/CHECKLISTS.md) — incl. the data-preserving migration strategy
 - [Notification scheduler & escalations](docs/NOTIFICATIONS.md)
 - [KPI definitions](docs/KPIS.md)
 - [Security](docs/SECURITY.md)

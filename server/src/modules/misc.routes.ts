@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { DateTime } from 'luxon';
 import { z } from 'zod';
 import { db } from '../db/knex';
-import { can, me, requirePerm } from '../auth/middleware';
+import { can, invalidateUserCache, me, requirePerm } from '../auth/middleware';
 import { loadVisibleProject, scopeProjects, scopeTasks, supervisedUserIds } from '../auth/scope';
 import { audit } from '../lib/audit';
 import { badRequest, forbidden, notFound } from '../lib/errors';
@@ -142,10 +142,15 @@ router.put('/settings', requirePerm('settings.manage'), async (req, res) => {
     daily_report_roles: z.array(z.string()).optional(),
     daily_report_reminder_time: z.string().regex(/^(\d{2}:\d{2})?$/).optional(),
     working_days: z.array(z.number().int().min(1).max(7)).optional(),
+    checklist_channels: z.array(z.enum(['in_app', 'email', 'browser_push', 'mobile_push', 'whatsapp'])).min(1).optional(),
+    checklist_notify_new_questions: z.boolean().optional(),
   }), req.body);
   if (b.default_timezone && !isValidTimezone(b.default_timezone)) throw badRequest('Unknown timezone');
   const before = await getAllSettings();
   for (const [k, v] of Object.entries(b)) if (v !== undefined && k in DEFAULT_SETTINGS) await setSetting(k as SettingKey, v, me(req).id);
+  if (b.organization_name) await db('organizations').where({ id: me(req).organizationId }).update({ name: b.organization_name, updated_at: db.fn.now() });
+  if (b.default_timezone) await db('organizations').where({ id: me(req).organizationId }).update({ timezone: b.default_timezone });
+  invalidateUserCache();
   await audit(req, { action: 'settings.updated', entityType: 'settings', before: Object.fromEntries(Object.keys(b).map((k) => [k, before[k]])), after: b });
   res.json(await getAllSettings());
 });

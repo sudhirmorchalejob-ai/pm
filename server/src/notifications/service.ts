@@ -1,4 +1,4 @@
-import { db, Tx } from '../db/knex';
+import { db, runInOrg, Tx } from '../db/knex';
 import { logger } from '../lib/logger';
 import { nextOccurrence, RecurrenceRule } from '../lib/recurrence';
 import { getSetting } from '../lib/settings';
@@ -24,15 +24,20 @@ export interface NotifyInput {
 
 /** Inserts logs idempotently. Returns ids of newly created rows (existing duplicates are skipped). */
 export async function createNotificationLogs(n: NotifyInput, trx: Tx = db): Promise<number[]> {
-  const users = [...new Set(n.userIds)].filter(Boolean);
+  const wanted = [...new Set(n.userIds)].filter(Boolean);
   const channels = [...new Set(n.channels)];
-  if (!users.length || !channels.length) return [];
+  if (!wanted.length || !channels.length) return [];
+  // Deactivated (or deleted) employees never receive notifications.
+  const users: number[] = await trx('users').whereIn('id', wanted).where('is_active', true).whereNull('deleted_at').pluck('id');
+  if (!users.length) return [];
   const rows = users.flatMap((uid) => channels.map((ch) => ({
     dedupe_key: `${n.dedupePrefix}:${uid}:${ch}`,
     schedule_id: n.scheduleId ?? null,
     rule_id: n.ruleId ?? null,
     escalation_id: n.escalationId ?? null,
     user_id: uid,
+    // Always the recipient's own organization (RLS WITH CHECK rejects cross-tenant recipients).
+    organization_id: trx.raw('(SELECT organization_id FROM users WHERE id = ?)', [uid]),
     channel: ch,
     category: n.category ?? 'reminder',
     title: n.title.slice(0, 300),
@@ -60,6 +65,18 @@ const PREF_COLUMN: Record<Channel, string> = {
 };
 
 export async function deliverLog(logId: number, attempt: number) {
+  const row = await db('notification_logs').where({ id: logId }).first('organization_id');
+  if (!row) return 'missing';
+  // Status updates must be committed even when we rethrow for a BullMQ retry, so the
+  // org-scoped transaction returns the error instead of throwing inside it.
+  const r = await runInOrg(row.organization_id, async () => {
+    try { return { value: await deliverLogInOrg(logId, attempt) }; } catch (e) { return { error: e }; }
+  });
+  if ('error' in r) throw r.error;
+  return r.value;
+}
+
+async function deliverLogInOrg(logId: number, attempt: number) {
   const log = await db('notification_logs').where({ id: logId }).first();
   if (!log) return 'missing';
   if (['sent', 'delivered', 'read', 'cancelled', 'skipped'].includes(log.status)) return 'already-final';
@@ -167,6 +184,12 @@ async function scheduleLink(s: any) {
  * notification_logs.dedupe_key is a second line of defence.
  */
 export async function fireSchedule(scheduleId: number, expectedRunAt?: Date) {
+  const row = await db('notification_schedules').where({ id: scheduleId }).first('organization_id');
+  if (!row) return { fired: false, logs: 0, nextRun: null };
+  return runInOrg(row.organization_id, () => fireScheduleInOrg(scheduleId, expectedRunAt));
+}
+
+async function fireScheduleInOrg(scheduleId: number, expectedRunAt?: Date) {
   let newLogIds: number[] = [];
   let nextRun: Date | null = null;
   const fired = await db.transaction(async (trx) => {

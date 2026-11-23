@@ -3,7 +3,7 @@ import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   BarChart3, Bell, BriefcaseBusiness, Building2, CalendarDays, CheckCheck, ChevronsLeft, ChevronsRight, ClipboardCheck, ClipboardList, FileClock,
-  GanttChartSquare, Gauge, LayoutDashboard, ListTodo, LogOut, Menu, Moon, NotebookPen, Rocket, Search, Settings, ShieldCheck, Sun, UserRound, Users, Video, X,
+  GanttChartSquare, Gauge, LayoutDashboard, ListChecks, ListTodo, LogOut, FileBarChart2, MessageSquareText, ShieldCheck as ComplianceIcon, Menu, Moon, NotebookPen, Rocket, Search, Settings, ShieldCheck, Sun, UserRound, Users, Video, X,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useAuth } from '../lib/auth';
@@ -19,6 +19,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
   { section: '', items: [{ to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true }] },
   { section: 'Work', items: [
     { to: '/tasks', label: 'Tasks', icon: ListTodo, perms: ['tasks.view'] },
+    { to: '/checklist', label: 'My checklist', icon: ListChecks, perms: ['checklists.submit'] },
     { to: '/daily-reports', label: 'Daily reports', icon: NotebookPen, perms: ['reports.daily.submit', 'reports.daily.review'] },
     { to: '/calendar', label: 'Calendar', icon: CalendarDays },
     { to: '/agenda', label: 'My agenda', icon: ClipboardList, perms: ['agenda.use'] },
@@ -35,10 +36,13 @@ const NAV: { section: string; items: NavItem[] }[] = [
     { to: '/monitoring', label: 'Employee monitoring', icon: Gauge, perms: ['monitoring.employees'], end: true },
     { to: '/monitoring/departments', label: 'Department monitoring', icon: Building2, perms: ['monitoring.departments'] },
     { to: '/resources', label: 'Resources', icon: Users, perms: ['resources.view'] },
+    { to: '/compliance', label: 'Checklist compliance', icon: ComplianceIcon, perms: ['checklists.monitor'] },
+    { to: '/eod', label: 'EOD reports', icon: FileBarChart2, perms: ['eod.view', 'eod.generate'] },
     { to: '/reports', label: 'Reports & analytics', icon: BarChart3, perms: ['analytics.view'] },
   ] },
   { section: 'Administration', items: [
     { to: '/organization', label: 'Organization', icon: Building2, perms: ['org.view', 'users.view'] },
+    { to: '/questions', label: 'Question builder', icon: MessageSquareText, perms: ['questions.manage'] },
     { to: '/audit', label: 'Audit log', icon: FileClock, perms: ['audit.view'] },
     { to: '/settings', label: 'Settings', icon: Settings, perms: ['settings.manage', 'roles.manage', 'notifications.rules.manage', 'escalations.manage'] },
   ] },
@@ -183,7 +187,7 @@ function ProfileMenu() {
       </button>
       {open && (
         <div className="card absolute right-0 top-12 z-50 w-60 p-1 shadow-xl">
-          <div className="border-b px-3 py-2"><p className="truncate text-sm font-medium">{user?.name}</p><p className="muted truncate text-xs">{user?.email}</p></div>
+          <div className="border-b px-3 py-2"><p className="truncate text-sm font-medium">{user?.name}</p><p className="muted truncate text-xs">{user?.email}</p><p className="mt-1 truncate text-xs font-medium text-brand-600" title="Organization">{user?.organization_name}</p></div>
           <Link to="/profile" onClick={() => setOpen(false)} className="flex items-center gap-2 rounded px-3 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-800"><UserRound className="h-4 w-4" /> Profile & preferences</Link>
           <button onClick={logout} className="flex w-full items-center gap-2 rounded px-3 py-2 text-sm text-rose-600 hover:bg-slate-100 dark:hover:bg-slate-800"><LogOut className="h-4 w-4" /> Sign out</button>
         </div>
@@ -200,6 +204,7 @@ const BOTTOM: NavItem[] = [
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
   const [collapsed, setCollapsed] = usePref('sidebar-collapsed', false);
   const [drawer, setDrawer] = useState(false);
   const loc = useLocation();
@@ -210,7 +215,10 @@ export function AppShell({ children }: { children: ReactNode }) {
       <aside className={clsx('fixed inset-y-0 left-0 z-30 hidden flex-col border-r bg-white transition-[width] dark:bg-slate-900 md:flex', collapsed ? 'w-[68px]' : 'w-[68px] lg:w-64')}>
         <div className="flex h-14 items-center gap-2 border-b px-4">
           <img src="/icon.svg" alt="" className="h-7 w-7" />
-          <span className={clsx('text-base font-bold tracking-tight', collapsed ? 'hidden' : 'hidden lg:inline')}>OrgPM</span>
+          <span className={clsx('min-w-0 leading-tight', collapsed ? 'hidden' : 'hidden lg:block')}>
+            <span className="block text-base font-bold tracking-tight">OrgPM</span>
+            <span className="muted block truncate text-[11px]" title={user?.organization_name}>{user?.organization_name}</span>
+          </span>
         </div>
         <div className="scrollbar-thin flex-1 overflow-y-auto px-2 py-3">
           <div className={collapsed ? '' : 'lg:hidden'}><NavList collapsed /></div>
@@ -227,7 +235,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="absolute inset-0 bg-slate-900/50" onClick={() => setDrawer(false)} />
           <div className="absolute inset-y-0 left-0 flex w-[82%] max-w-xs flex-col bg-white shadow-xl dark:bg-slate-900">
             <div className="flex h-14 items-center justify-between border-b px-4">
-              <span className="flex items-center gap-2 font-bold"><img src="/icon.svg" alt="" className="h-7 w-7" /> OrgPM</span>
+              <span className="flex min-w-0 items-center gap-2"><img src="/icon.svg" alt="" className="h-7 w-7" /><span className="min-w-0 leading-tight"><span className="block font-bold">OrgPM</span><span className="muted block truncate text-[11px]">{user?.organization_name}</span></span></span>
               <button className="btn-ghost btn-sm" onClick={() => setDrawer(false)} aria-label="Close menu"><X className="h-5 w-5" /></button>
             </div>
             <div className="flex-1 overflow-y-auto px-2 py-3"><NavList onNavigate={() => setDrawer(false)} /></div>

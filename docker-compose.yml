@@ -7,13 +7,18 @@ services:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-orgpm}
-      POSTGRES_USER: ${POSTGRES_USER:-orgpm}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # Bootstrap superuser (administration only — the app never connects as it).
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD in .env}
+      # Non-superuser application role + database, created by docker/postgres-init (RLS applies to it).
+      APP_DB_NAME: ${POSTGRES_DB:-orgpm}
+      APP_DB_USER: ${POSTGRES_USER:-orgpm}
+      APP_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-orgpm} -d ${POSTGRES_DB:-orgpm}"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${POSTGRES_DB:-orgpm}"]
       interval: 10s
       timeout: 5s
       retries: 10

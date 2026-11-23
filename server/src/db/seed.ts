@@ -1,8 +1,9 @@
 import bcrypt from 'bcryptjs';
 import { DateTime } from 'luxon';
-import { db } from './knex';
+import { activeOrgIds, baseDb, db, runInOrg } from './knex';
 import { migrate } from './migrate';
-import { PERMISSIONS, ROLE_DEFS } from '../auth/permissions';
+import { PERMISSIONS, PERMISSIONS_V1_COUNT, ROLE_DEFS } from '../auth/permissions';
+import { applyTemplate, seedQuestionnaireDefaults } from '../questionnaire/templates';
 import { logger } from '../lib/logger';
 
 /**
@@ -12,19 +13,56 @@ import { logger } from '../lib/logger';
  * Demo accounts all use the password in DEMO_PASSWORD (default "Password@123").
  */
 export async function seedBase() {
+  // Global reference data (shared by all tenants).
   for (const [key, [module, description]] of Object.entries(PERMISSIONS)) {
     await db('permissions').insert({ key, module, description }).onConflict('key').merge(['module', 'description']);
   }
   for (const r of ROLE_DEFS) {
-    const [role] = await db('roles').insert({ key: r.key, name: r.name, description: r.description, scope_level: r.scope, rank: r.rank })
-      .onConflict('key').merge(['name', 'description', 'scope_level', 'rank']).returning('*');
-    const existing = await db('role_permissions').where({ role_id: role.id }).count({ c: '*' }).first();
-    // Only set defaults for roles that have never been configured (preserve admin edits), but super admin always gets everything.
-    if (Number(existing?.c) === 0 || r.key === 'super_admin') {
-      const ids = await db('permissions').whereIn('key', r.permissions).pluck('id');
-      await db('role_permissions').insert(ids.map((pid: number) => ({ role_id: role.id, permission_id: pid }))).onConflict(['role_id', 'permission_id']).ignore();
+    await db('roles').insert({ key: r.key, name: r.name, description: r.description, scope_level: r.scope, rank: r.rank })
+      .onConflict('key').merge(['name', 'description', 'scope_level', 'rank']);
+  }
+  // Per-tenant defaults for every organization (idempotent).
+  for (const orgId of await activeOrgIds()) await runInOrg(orgId, () => seedOrganization(orgId));
+
+  // Bootstrap the first Super Admin (into the default organization) when there are no users at all.
+  if (!(await baseDb('users').first('id'))) {
+    const email = process.env.ADMIN_EMAIL;
+    const password = process.env.ADMIN_PASSWORD;
+    if (email && password) {
+      const orgId = (await baseDb('organizations').orderBy('id').first('id')).id;
+      await runInOrg(orgId, async () => {
+        const role = await db('roles').where({ key: 'super_admin' }).first();
+        const [u] = await db('users').insert({ employee_code: 'ADMIN', name: 'System Administrator', email: email.toLowerCase(), password_hash: await bcrypt.hash(password, 12), role_id: role.id, timezone: process.env.DEFAULT_TIMEZONE ?? 'Asia/Kolkata' }).returning('id');
+        await db('user_notification_preferences').insert({ user_id: u.id });
+      });
+      logger.info({ email }, 'bootstrap super admin created');
     }
   }
+}
+
+/**
+ * Default role permissions, notification rules and escalation rules for one organization.
+ * Must run inside runInOrg(orgId): rows get organization_id from the tenant context.
+ * Roles already configured in this org keep their edits; Super Admin always gets every permission.
+ */
+export async function seedOrganization(_orgId: number) {
+  // Permissions this organization has already been offered. New catalogue entries are granted to their
+  // default roles exactly once; a later removal by an administrator is therefore respected.
+  const offeredRow = await db('app_settings').where({ key: 'seeded_permission_keys' }).first('value');
+  const hasMatrix = !!(await db('role_permissions').first('role_id'));
+  const offered = new Set<string>(offeredRow ? offeredRow.value : hasMatrix ? Object.keys(PERMISSIONS).slice(0, PERMISSIONS_V1_COUNT) : []);
+  for (const r of ROLE_DEFS) {
+    const role = await db('roles').where({ key: r.key }).first('id');
+    const existing = await db('role_permissions').where({ role_id: role.id }).count({ c: '*' }).first();
+    const grant = Number(existing?.c) === 0 || r.key === 'super_admin' ? r.permissions : r.permissions.filter((k) => !offered.has(k));
+    if (grant.length) {
+      const ids = await db('permissions').whereIn('key', grant).pluck('id');
+      await db('role_permissions').insert(ids.map((pid: number) => ({ role_id: role.id, permission_id: pid })))
+        .onConflict(['organization_id', 'role_id', 'permission_id']).ignore();
+    }
+  }
+  await db('app_settings').insert({ key: 'seeded_permission_keys', value: JSON.stringify(Object.keys(PERMISSIONS)) })
+    .onConflict(['organization_id', 'key']).merge(['value']);
 
   if (!(await db('notification_rules').first())) {
     const T = (event_type: string, name: string, roles: string[], title: string, msg: string, channels = ['in_app', 'email', 'browser_push']) =>
@@ -59,21 +97,61 @@ export async function seedBase() {
       { name: 'Extended delay → Admin', level: 4, offset_minutes: 7 * 24 * 60, notify_roles: ['admin', 'director'], channels: ['in_app', 'email'] },
     ]);
   }
+  await seedQuestionnaireDefaults();
+  await ensureEmployeeHistory();
 
-  // Bootstrap super admin (production) when the database has no users.
-  if (!(await db('users').first())) {
-    const email = process.env.ADMIN_EMAIL;
-    const password = process.env.ADMIN_PASSWORD;
-    if (email && password) {
-      const role = await db('roles').where({ key: 'super_admin' }).first();
-      const [u] = await db('users').insert({ employee_code: 'ADMIN', name: 'System Administrator', email, password_hash: await bcrypt.hash(password, 12), role_id: role.id, timezone: process.env.DEFAULT_TIMEZONE ?? 'Asia/Kolkata' }).returning('id');
-      await db('user_notification_preferences').insert({ user_id: u.id });
-      logger.info({ email }, 'bootstrap super admin created');
-    }
-  }
 }
 
-export async function seedDemo() {
+/** Every employee has a current department record and an initial status record (idempotent). */
+async function ensureEmployeeHistory() {
+  await db.raw(`INSERT INTO department_history (user_id, department_id, team_id, effective_from, reason)
+    SELECT u.id, u.department_id, u.team_id, u.created_at, 'Initial record'
+    FROM users u WHERE u.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM department_history h WHERE h.user_id = u.id)`);
+  await db.raw(`INSERT INTO employee_status_history (user_id, is_active, employment_status, reason, changed_at)
+    SELECT u.id, u.is_active, u.employment_status, 'Initial record', u.created_at
+    FROM users u WHERE NOT EXISTS (SELECT 1 FROM employee_status_history h WHERE h.user_id = u.id)`);
+}
+
+/**
+ * Demo questionnaire: applies the four starter templates to matching demo departments
+ * (adds a small "Data Research" department for the Data Scrapper template). Only runs when
+ * the organization has no questions yet; no answers are fabricated.
+ */
+async function seedDemoQuestionnaire() {
+  if (await db('questions').first('id')) return;
+  const admin = await db('users').where({ email: 'admin@orgpm.dev' }).first('id');
+  if (!admin) return;
+  const dept = async (code: string) => (await db('departments').where({ code }).first('id'))?.id as number | undefined;
+  let data = await dept('DATA');
+  if (!data) {
+    [{ id: data }] = await db('departments').insert({ name: 'Data Research', code: 'DATA', description: 'Lead research and data scraping' }).returning('id');
+    const pw = await bcrypt.hash(process.env.DEMO_PASSWORD ?? 'Password@123', 10);
+    const role = await db('roles').where({ key: 'employee' }).first('id');
+    const g = await db('designations').where({ title: 'Analyst' }).first('id');
+    const people = await db('users').insert([
+      { employee_code: 'E026', name: 'Kabir Sethi', email: 'kabir@orgpm.dev', password_hash: pw, role_id: role.id, department_id: data, designation_id: g?.id ?? null, timezone: 'Asia/Kolkata' },
+      { employee_code: 'E027', name: 'Zoya Khan', email: 'zoya@orgpm.dev', password_hash: pw, role_id: role.id, department_id: data, designation_id: g?.id ?? null, timezone: 'Asia/Kolkata' },
+    ]).onConflict('email').ignore().returning('id');
+    if (people.length) await db('user_notification_preferences').insert(people.map((p: any) => ({ user_id: p.id }))).onConflict('user_id').ignore();
+  }
+  const plan: [string, number | undefined][] = [['development', await dept('IT')], ['data_scrapper', data], ['digital_marketing', await dept('MKT')], ['implementation', await dept('OPS')]];
+  for (const [key, deptId] of plan) {
+    const tpl = await db('question_templates').where({ key }).first('id');
+    if (tpl && deptId) await applyTemplate({ templateId: tpl.id, actorId: admin.id, target: { type: 'department', departmentIds: [Number(deptId)] }, deadlineTime: '18:30', reminderOffsets: [60] });
+  }
+  await ensureEmployeeHistory();
+  logger.info('demo questionnaire created');
+}
+
+/** Demo organization data, seeded into the default organization (id 1). */
+export const seedDemo = () => runInOrg(1, async () => {
+  await db('organizations').where({ id: 1 }).update({ name: 'Acme Corporation (demo)', slug: 'acme-demo' });
+  await db('app_settings').insert({ key: 'organization_name', value: JSON.stringify('Acme Corporation (demo)') }).onConflict(['organization_id', 'key']).merge();
+  await seedDemoInOrg();
+  await seedDemoQuestionnaire();
+});
+
+async function seedDemoInOrg() {
   if (await db('users').where({ email: 'admin@orgpm.dev' }).first()) { logger.info('demo data already present'); return; }
   const pw = await bcrypt.hash(process.env.DEMO_PASSWORD ?? 'Password@123', 10);
   const role = Object.fromEntries((await db('roles').select('id', 'key')).map((r) => [r.key, r.id]));

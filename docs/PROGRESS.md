@@ -1,6 +1,6 @@
 # Progress checklist, verification status & assumptions
 
-Status as of 2026-11-21. ✅ implemented and verified by automated tests and/or a live run · ☑️ implemented, verified
+Status as of 2026-11-23. ✅ implemented and verified by automated tests and/or a live run · ☑️ implemented, verified
 manually in the running app · ⚠️ implemented, not verifiable here (needs external credentials/infrastructure) · ❌ not done.
 
 ## Delivery steps
@@ -17,7 +17,9 @@ manually in the running app · ⚠️ implemented, not verifiable here (needs ex
 | 9. Persistent notification scheduler (BullMQ + Redis + PostgreSQL) | ✅ incl. live run: reminder fired on time; reminder due during server downtime delivered after restart |
 | 10. Escalations, approvals (task + project-level), reports & Excel/PDF exports | ✅ |
 | 11. Calendar (day/week/month), Gantt with dependencies, resource planning | ✅ / ☑️ |
-| 12. Tests | ✅ 47 Vitest unit/integration tests, 4 Playwright e2e tests (desktop + mobile) — all passing |
+| 12. Tests | ✅ 78 Vitest unit/integration tests (incl. 7 multi-tenancy, 13 checklist/EOD integration and 11 questionnaire unit tests; run as a non-superuser so RLS is enforced), 6 Playwright e2e tests (desktop + mobile) — all passing |
+| Multi-tenancy + self-service organization registration | ✅ migration `002_multitenancy.sql` (RLS on 47 tables); verified locally and applied to the Render database (RLS confirmed there) |
+| Department/employee history, question builder, templates, daily checklists, checklist reminders & escalations, compliance dashboard, EOD reports | ✅ migration `003_questionnaire_eod.sql` (additive, backfilled); see docs/CHECKLISTS.md. EOD PDFs verified as valid files, not visually inspected |
 | 13. Production deployment (Dockerfiles, compose, nginx, env examples, backup/restore, monitoring docs) | ⚠️ written; Docker was not available on this machine, so images were not built here. The same production builds (`npm run build` for server and web) were run successfully. |
 
 ## Notification channels
@@ -39,6 +41,11 @@ manually in the running app · ⚠️ implemented, not verifiable here (needs ex
   (affects only `uuid` v3/v5/v6 with a caller-supplied buffer, which is not used).
 
 ## Assumptions made
+* Checklists: employees with status `active` or `notice` receive checklists (`on_leave` and deactivated do not); the checklist date is the employee's local date; answers can be given/revised for 7 days; a checklist is complete when every applicable mandatory question is submitted.
+* EOD reports use the organization's default timezone for "tasks completed today"; automatic generation runs on working days only; stored reports are snapshots (a live view of current data is always available).
+* Multi-tenancy: an email address belongs to exactly one organization; existing data was moved into a default organization;
+  self-service registration is open by default (`ALLOW_REGISTRATION`). Foreign keys are not tenant-composite: the app
+  validates referenced ids through RLS-scoped queries before use.
 * One role per user; data scope is a property of the role (configurable permissions, fixed scope levels).
 * A task counts as completed only when a reviewer approves it; progress is capped at 99% until then.
 * HODs and Team Leaders can assign only within their department/team; Project Managers can assign across departments

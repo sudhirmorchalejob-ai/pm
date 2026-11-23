@@ -21,11 +21,39 @@
   re-arms upcoming jobs.
 * **Realtime**: workers publish to a Redis channel; every API instance relays to its Socket.IO rooms (`u:<userId>`).
 
+## Multi-tenancy
+
+Every organization (tenant) is a row in `organizations`; every business table carries `organization_id`.
+Isolation is enforced **in PostgreSQL** with row-level security, not only in application code:
+
+* Each tenant table has `ENABLE` + `FORCE ROW LEVEL SECURITY` and a policy
+  `organization_id = app_current_org()`, where `app_current_org()` reads the transaction setting `app.org_id`.
+  `organization_id` defaults to the same value, so inserts are stamped automatically.
+* `authenticate` opens one transaction per request and runs `set_config('app.org_id', <user's org>, true)`.
+  The exported `db` is a proxy that routes every query to that transaction (via `AsyncLocalStorage`), so a query that
+  forgets a tenant filter still cannot read or write another organization's rows. The transaction commits right before
+  the response is sent (status < 400) and rolls back otherwise; queue jobs are enqueued only after commit.
+* Background jobs resolve the organization of the row they process (schedule, delivery log) or iterate active
+  organizations, and run inside `runInOrg(orgId, …)` with the same guarantees.
+* With no `app.org_id` set (sign-in, registration, job dispatch) the policy is permissive; those paths filter explicitly.
+* Per-tenant: role → permission matrix, settings, notification and escalation rules, department/project/skill codes,
+  employee codes. Global: roles, permissions, and user emails (an email identifies the tenant at sign-in).
+* **The application must connect as a non-superuser role** (superusers bypass RLS). Docker creates one
+  (`docker/postgres-init`); locally use `orgpm_app`; Render's database user already qualifies.
+* Self-service onboarding: `POST /api/auth/register` creates the organization, seeds its defaults and its first Super Admin.
+
+## Daily questionnaire & EOD
+
+Questions (`questions`, `question_assignments`, sections, editable templates) are configuration; a worker job materialises
+them into per-employee `checklists`/`checklist_items` (unique per user × local date × question, question text snapshotted).
+Submitted answers are versioned in append-only `checklist_answer_revisions`. Reminders and escalations reuse the
+notification pipeline; EOD reports are JSON snapshots in `eod_reports`, filtered per viewer. Details: [CHECKLISTS.md](CHECKLISTS.md).
+
 ## Roles, permissions & data scope
 
 Two independent layers:
 
-1. **Permissions** (what you may do): 37 keys in `server/src/auth/permissions.ts`, assigned per role in
+1. **Permissions** (what you may do): 37 keys in `server/src/auth/permissions.ts`, assigned per role **per organization** in
    `role_permissions` and editable at runtime (Settings → Roles & permissions; Super Admin always has all).
 2. **Scope** (which rows you may see), fixed per role: `organization` (Super Admin, Director, Management Viewer),
    `project` (Project Manager: projects they manage/belong to), `department` (HOD), `team` (Team Leader), `self` (Employee).
@@ -52,6 +80,7 @@ Full DDL with constraints and indexes: [`server/migrations/001_init.sql`](../ser
 
 ```mermaid
 erDiagram
+  organizations ||--o{ users : "tenant (every business table has organization_id)"
   roles ||--o{ role_permissions : grants
   permissions ||--o{ role_permissions : ""
   roles ||--o{ users : has

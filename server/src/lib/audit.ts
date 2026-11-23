@@ -11,9 +11,12 @@ export interface AuditEntry {
 }
 
 /** Append an immutable audit record. Pass `req` for actor/IP, or `actorId` from background jobs. */
-export async function audit(ctx: Request | { actorId: number | null }, e: AuditEntry, trx: Tx = db) {
+export async function audit(ctx: Request | { actorId: number | null; orgId?: number | null }, e: AuditEntry, trx: Tx = db) {
   const isReq = 'headers' in ctx;
+  // Inside a tenant context organization_id defaults from app.org_id; outside one (sign-in) pass it explicitly.
+  const orgId = isReq ? (ctx as Request).user?.organizationId : (ctx as any).orgId;
   await trx('audit_logs').insert({
+    ...(orgId ? { organization_id: orgId } : {}),
     actor_id: isReq ? (ctx as Request).user?.id ?? null : (ctx as any).actorId,
     action: e.action,
     entity_type: e.entityType,

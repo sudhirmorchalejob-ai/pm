@@ -35,6 +35,8 @@ services:
         sync: false            # e.g. https://orgpm.onrender.com
       - key: CORS_ORIGINS
         sync: false            # same as APP_URL
+      - key: ALLOW_REGISTRATION
+        value: "true"          # "Register organization" on the sign-in page (multi-tenant)
       - key: DEFAULT_TIMEZONE
         value: Asia/Kolkata
       - key: ADMIN_EMAIL

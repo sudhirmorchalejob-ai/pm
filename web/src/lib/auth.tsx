@@ -6,12 +6,14 @@ import { connectSocket, disconnectSocket } from './socket';
 export interface Me {
   id: number; name: string; email: string; employee_code: string; phone: string | null; timezone: string; must_change_password: boolean;
   department_id: number | null; department_name: string | null; team_id: number | null; team_name: string | null; designation: string | null;
+  organization_id: number; organization_name: string; organization_slug: string;
   role: string; role_name: string; scope: 'organization' | 'project' | 'department' | 'team' | 'self'; permissions: string[];
 }
 
 interface AuthCtx {
   user: Me | null; loading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  register: (data: { organization_name: string; name: string; email: string; password: string; timezone: string }) => Promise<void>;
   logout: () => Promise<void>;
   setUser: (u: Me) => void;
   can: (...perms: string[]) => boolean;
@@ -44,6 +46,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(r.user);
   }, [setUser]);
 
+  const register = useCallback(async (data: { organization_name: string; name: string; email: string; password: string; timezone: string }) => {
+    const r = await api<{ accessToken: string; user: Me }>('/auth/register', { body: data });
+    setAccessToken(r.accessToken);
+    setUser(r.user);
+  }, [setUser]);
+
   const logout = useCallback(async () => {
     try { await api('/auth/logout', { method: 'POST' }); } catch { /* ignore */ }
     setAccessToken(null);
@@ -52,9 +60,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [qc, setUser]);
 
   const value = useMemo<AuthCtx>(() => ({
-    user, loading, login, logout, setUser: (u) => setUser(u),
+    user, loading, login, register, logout, setUser: (u) => setUser(u),
     can: (...perms) => !!user && perms.some((p) => user.permissions.includes(p)),
-  }), [user, loading, login, logout, setUser]);
+  }), [user, loading, login, register, logout, setUser]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

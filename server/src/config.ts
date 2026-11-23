@@ -6,13 +6,15 @@ const bool = z.enum(['true', 'false']).default('false').transform((v) => v === '
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().default(4000),
-  DATABASE_URL: z.string().default('postgres://postgres@localhost:5432/orgpm'),
+  DATABASE_URL: z.string().default('postgres://orgpm_app@localhost:5432/orgpm'),
   DATABASE_SSL: z.enum(['auto', 'true', 'false']).default('auto'),
   // Managed providers (Render, Heroku…) use certificates Node does not trust by default.
   DATABASE_SSL_REJECT_UNAUTHORIZED: bool,
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
   REDIS_URL: z.string().default('redis://127.0.0.1:6379'),
   QUEUE_PREFIX: z.string().default('orgpm'),
+  // Allow anyone to register a new organization from the sign-in page.
+  ALLOW_REGISTRATION: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
   JWT_ACCESS_SECRET: z.string().min(16).default('dev-access-secret-change-me-please'),
   JWT_REFRESH_SECRET: z.string().min(16).default('dev-refresh-secret-change-me-please'),
   ACCESS_TOKEN_TTL: z.string().default('15m'),
