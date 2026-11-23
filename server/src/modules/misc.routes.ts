@@ -6,7 +6,7 @@ import { can, invalidateUserCache, me, requirePerm } from '../auth/middleware';
 import { loadVisibleProject, scopeProjects, scopeTasks, supervisedUserIds } from '../auth/scope';
 import { audit } from '../lib/audit';
 import { badRequest, forbidden, notFound } from '../lib/errors';
-import { idParam, paginate, parse, zDate, zId, zOptId, zOptStr, zPage } from '../lib/http';
+import { idParam, paginate, parse, zDate, zId, zOptId, zOptStr, zPage, patchOf } from '../lib/http';
 import { isValidTimezone } from '../lib/recurrence';
 import { DEFAULT_SETTINGS, getAllSettings, setSetting, SettingKey } from '../lib/settings';
 import { userKpis } from '../lib/kpi';
@@ -77,7 +77,7 @@ router.post('/meetings', requirePerm('meetings.manage'), async (req, res) => {
 
 router.patch('/meetings/:id', async (req, res) => {
   const m = await loadMeeting(req, true);
-  const b = parse(meetingSchema.partial().extend({ minutes: zOptStr, status: z.enum(['scheduled', 'completed', 'cancelled']).optional() }), req.body);
+  const b = parse(patchOf(meetingSchema).extend({ minutes: zOptStr, status: z.enum(['scheduled', 'completed', 'cancelled']).optional() }), req.body);
   const { attendee_ids, ...patch } = b;
   const s = patch.starts_at ?? m.starts_at; const e = patch.ends_at ?? m.ends_at;
   if (new Date(e) <= new Date(s)) throw badRequest('Meeting must end after it starts');

@@ -30,9 +30,10 @@ export async function buildEodSnapshot(date: string) {
   const clByUser = new Map(checklists.map((c: any) => [c.user_id, c]));
   // Everyone active today + anyone who had a checklist that day (even if deactivated since)
   const users = await db('users as u').leftJoin('departments as d', 'd.id', 'u.department_id').leftJoin('designations as g', 'g.id', 'u.designation_id')
-    .leftJoin('teams as t', 't.id', 'u.team_id').whereNull('u.deleted_at')
+    .leftJoin('teams as t', 't.id', 'u.team_id').leftJoin('companies as co', 'co.id', 'u.company_id').whereNull('u.deleted_at')
     .where((w) => w.where((a) => a.where('u.is_active', true).whereIn('u.employment_status', CHECKLIST_STATUSES)).orWhereIn('u.id', checklists.map((c: any) => c.user_id)))
-    .select('u.id', 'u.name', 'u.employee_code', 'u.is_active', 'u.department_id', 'd.name as department_name', 'g.title as designation', 't.name as team_name')
+    .select('u.id', 'u.name', 'u.employee_code', 'u.is_active', 'u.department_id', 'd.name as department_name', 'g.title as designation', 't.name as team_name',
+      'u.company_id', 'co.name as company_name')
     .orderBy('u.name');
   const userIds = users.map((u: any) => u.id);
   const items = checklists.length ? await db('checklist_items').whereIn('checklist_id', checklists.map((c: any) => c.id)).orderBy(['section_order', 'sort_order', 'id']) : [];
@@ -47,6 +48,16 @@ export async function buildEodSnapshot(date: string) {
     .select('ta.user_id', 't.id', 't.task_key', 't.title', 't.status', 't.deadline', 't.progress', 't.priority', 't.blocker_note', 'p.name as project_name') : [];
   const dailyReports = userIds.length ? await db('daily_reports').whereIn('user_id', userIds).where({ report_date: date })
     .select('user_id', 'work_completed', 'work_pending', 'challenges', 'support_required', 'delay_reason', 'next_actions', 'hours_spent') : [];
+  // Daily activities (quick entries) and personal EOD reports recorded for this date
+  const activities = userIds.length ? await db('activities as a').join('activity_categories as c', 'c.id', 'a.category_id').leftJoin('projects as p', 'p.id', 'a.project_id')
+    .whereIn('a.user_id', userIds).where('a.activity_date', date).whereNull('a.deleted_at').orderBy('a.occurred_at')
+    .select('a.user_id', 'a.id', 'a.occurred_at', 'a.description', 'a.status', 'a.duration_minutes', 'a.follow_up_required', 'a.follow_up_note', 'a.follow_up_done_at',
+      'a.issue_resolved', 'a.bugs_found', 'c.name as category', 'c.report_section as section', 'p.name as project_name',
+      db.raw(`coalesce((SELECT array_agg(u.name ORDER BY u.name) FROM activity_participants ap JOIN users u ON u.id = ap.user_id WHERE ap.activity_id = a.id AND ap.via_department_id IS NULL), '{}') AS participants`),
+      db.raw(`coalesce((SELECT array_agg(d.name ORDER BY d.name) FROM departments d WHERE d.id = ANY(a.department_ids)), '{}') AS departments`)) : [];
+  const personalReports = userIds.length ? await db('personal_eod_reports').whereIn('user_id', userIds).where({ report_date: date })
+    .select('user_id', 'status', 'content', 'finalized_at', 'updated_at') : [];
+  const companies = await db('companies').whereNull('deleted_at').select('id', 'name').orderBy('name');
   const projects = await db('projects as p').leftJoin('departments as d', 'd.id', 'p.department_id').leftJoin('users as m', 'm.id', 'p.manager_id')
     .whereNull('p.deleted_at').where('p.is_future', false).whereIn('p.status', ['approved', 'planned', 'ready_to_start', 'in_progress', 'on_hold'])
     .select('p.id', 'p.code', 'p.name', 'p.status', 'p.progress', 'p.end_date', 'p.department_id', 'd.name as department_name', 'm.name as manager_name',
@@ -84,15 +95,27 @@ export async function buildEodSnapshot(date: string) {
       tasks_completed: completed.filter((t: any) => t.user_id === u.id).map(({ user_id: _u, ...t }: any) => t),
       tasks_pending: pend.map(({ user_id: _u, ...t }: any) => ({ ...t, overdue: !!t.deadline && new Date(t.deadline) < e })),
       daily_report: dr ? { ...dr, user_id: undefined } : null,
+      activities: activities.filter((a: any) => a.user_id === u.id).map(({ user_id: _u, ...a }: any) => a),
+      personal_report: (() => {
+        const r: any = personalReports.find((x: any) => x.user_id === u.id);
+        // Only a finalized report is included as text; a draft is only flagged.
+        return r ? { status: r.status, finalized_at: r.finalized_at, content: r.status === 'final' ? r.content : null } : null;
+      })(),
     };
   });
 
-  return { org_name: orgName, date, timezone: tz, built_at: now.toISOString(), departments, employees, projects };
+  return { org_name: orgName, date, timezone: tz, built_at: now.toISOString(), departments, companies, employees, projects };
 }
 
 export type EodSnapshot = Awaited<ReturnType<typeof buildEodSnapshot>>;
 
-export interface EodFilter { userIds?: number[] | null; departmentId?: number | null; userId?: number | null; projectIds?: number[] | null }
+export interface EodFilter { userIds?: number[] | null; departmentId?: number | null; userId?: number | null; companyId?: number | null; projectIds?: number[] | null }
+
+const actsOf = (e: any): any[] => e.activities ?? []; // snapshots stored before activities existed have none
+const actLine = (a: any) => {
+  const who = [...(a.participants ?? []), ...(a.departments ?? []).map((d: string) => `${d} team`)];
+  return `${a.category}: ${a.description}${who.length ? ` (with ${who.join(', ')})` : ''}${a.project_name ? ` [${a.project_name}]` : ''}${a.bugs_found ? ` · ${a.bugs_found} bug(s)` : ''}${a.issue_resolved === true ? ' · resolved' : a.issue_resolved === false ? ' · unresolved' : ''}${a.status !== 'completed' ? ` · ${String(a.status).replace('_', ' ')}` : ''}`;
+};
 
 const has = (s?: string | null) => !!s && s.trim().length > 0;
 
@@ -102,6 +125,7 @@ export function deriveEodView(snap: EodSnapshot, f: EodFilter = {}) {
   if (f.userIds) emps = emps.filter((e: any) => f.userIds!.includes(e.id));
   if (f.departmentId) emps = emps.filter((e: any) => (e.checklist?.department_id ?? e.department_id) === f.departmentId);
   if (f.userId) emps = emps.filter((e: any) => e.id === f.userId);
+  if (f.companyId) emps = emps.filter((e: any) => e.company_id === f.companyId);
   let projects = snap.projects;
   if (f.projectIds) projects = projects.filter((p: any) => f.projectIds!.includes(p.id));
   if (f.departmentId) projects = projects.filter((p: any) => p.department_id === f.departmentId);
@@ -122,6 +146,7 @@ export function deriveEodView(snap: EodSnapshot, f: EodFilter = {}) {
     tasks_pending: emps.reduce((s: number, e: any) => s + e.tasks_pending.length, 0),
     tasks_overdue: emps.reduce((s: number, e: any) => s + e.tasks_pending.filter((t: any) => t.overdue).length, 0),
     tasks_blocked: emps.reduce((s: number, e: any) => s + e.tasks_pending.filter((t: any) => t.status === 'blocked').length, 0),
+    activities: emps.reduce((s: number, e: any) => s + actsOf(e).length, 0),
   };
 
   const deptName = (id: number | null) => snap.departments.find((d: any) => d.id === id)?.name ?? 'No department';
@@ -180,6 +205,7 @@ export function deriveEodView(snap: EodSnapshot, f: EodFilter = {}) {
       plans: by('plan'), pending_work: by('pending'), progress: [...by('progress'), ...by('deadline')],
       campaigns: by('campaign'), urls, blockers, delays, other: by('other'),
       tasks_completed: list.flatMap((e: any) => e.tasks_completed.map((t: any) => ({ ...t, employee: e.name }))),
+      activities: list.flatMap((e: any) => actsOf(e).map((a: any) => ({ ...a, employee: e.name, text: actLine(a) }))),
       tasks_pending: list.reduce((s: number, e: any) => s + e.tasks_pending.length, 0),
       tasks_overdue: list.reduce((s: number, e: any) => s + e.tasks_pending.filter((t: any) => t.overdue).length, 0),
       projects: projects.filter((p: any) => p.department_id === id),
@@ -192,9 +218,21 @@ export function deriveEodView(snap: EodSnapshot, f: EodFilter = {}) {
     due_at: e.checklist.due_at, overdue: e.checklist.overdue,
   }));
 
+  // Company-wise breakdown (business entities); employees without a company are grouped as "No company"
+  const companyNames = new Map<number, string>(((snap as any).companies ?? []).map((c: any) => [c.id, c.name]));
+  const byCompany = new Map<number | null, any[]>();
+  for (const e of emps) { const k = e.company_id ?? null; if (!byCompany.has(k)) byCompany.set(k, []); byCompany.get(k)!.push(e); }
+  const companies = [...byCompany.entries()].map(([id, list]) => {
+    const exp = list.filter((e: any) => e.submission !== 'no_checklist');
+    const sub = exp.filter((e: any) => e.submission === 'submitted').length;
+    return { id, name: id ? companyNames.get(id) ?? list[0].company_name ?? `Company #${id}` : 'No company', employees: list.length, expected: exp.length, submitted: sub,
+      compliance: exp.length ? Math.round((sub / exp.length) * 100) : null, activities: list.reduce((n: number, e: any) => n + actsOf(e).length, 0),
+      tasks_completed: list.reduce((n: number, e: any) => n + e.tasks_completed.length, 0) };
+  }).sort((a, b) => (a.id === null ? 1 : b.id === null ? -1 : a.name.localeCompare(b.name)));
+
   return {
     org_name: snap.org_name, date: snap.date, timezone: snap.timezone, built_at: snap.built_at, summary, not_submitted: notSubmitted,
-    departments, employees: emps, projects,
+    departments, companies, employees: emps.map((e: any) => ({ ...e, activities: actsOf(e), personal_report: e.personal_report ?? null })), projects,
   };
 }
 export type EodView = ReturnType<typeof deriveEodView>;
@@ -213,7 +251,11 @@ export function eodText(v: EodView, mode: 'consolidated' | 'employee', meta: { g
   L.push('SUMMARY');
   L.push(`• Checklists: ${s.submitted} of ${s.expected} complete${s.compliance !== null ? ` (${s.compliance}%)` : ''} · ${s.partial} partial · ${s.not_submitted} not submitted${s.late ? ` · ${s.late} late` : ''}`);
   L.push(`• Tasks: ${s.tasks_completed} completed today · ${s.tasks_pending} pending (${s.tasks_overdue} overdue, ${s.tasks_blocked} blocked)`);
+  if (s.activities) L.push(`• Daily activities recorded: ${s.activities}`);
   if (s.no_checklist) L.push(`• ${s.no_checklist} employee(s) had no questions assigned for this date`);
+  if (v.companies.length > 1 || (v.companies.length === 1 && v.companies[0].id !== null)) {
+    for (const c of v.companies) L.push(`• ${c.name}: ${c.employees} employee(s)${c.expected ? `, ${c.submitted}/${c.expected} checklists complete` : ''}${c.activities ? `, ${c.activities} activities` : ''}`);
+  }
   L.push('');
   L.push('NOT SUBMITTED / INCOMPLETE');
   if (!v.not_submitted.length) L.push('• Everyone with a checklist submitted it.');
@@ -227,6 +269,7 @@ export function eodText(v: EodView, mode: 'consolidated' | 'employee', meta: { g
       sec('Key metrics', d.metrics.map((m: any) => (m.total === null ? `${m.question}: not reported (0 of ${m.asked})` : `${m.question}: ${m.total.toLocaleString('en-US')}${m.unit ? ` ${m.unit}` : ''} (${m.reported} of ${m.asked} reported)`)));
       sec('Completed work', d.work_done.map((w: any) => `${w.employee}: ${w.text}`));
       sec('Tasks completed', d.tasks_completed.map((t: any) => `${t.employee}: ${t.task_key} ${t.title}${t.project_name ? ` [${t.project_name}]` : ''}`));
+      sec('Daily activities & coordination', d.activities.map((a: any) => `${a.employee}: ${a.text}`));
       sec('Progress & deadlines', d.progress.map((w: any) => `${w.employee} — ${w.question}: ${w.text}`));
       sec('Campaigns', d.campaigns.map((w: any) => `${w.employee} — ${w.question}: ${w.text}`));
       sec('Published / supporting URLs', d.urls.map((u: any) => `${u.employee}: ${u.url}${u.published_at ? ` (published ${String(u.published_at).replace('T', ' ').slice(0, 16)})` : ''}`));
@@ -244,7 +287,7 @@ export function eodText(v: EodView, mode: 'consolidated' | 'employee', meta: { g
     }
   } else {
     for (const e of v.employees) {
-      L.push(`${e.name}${e.employee_code ? ` (${e.employee_code})` : ''} — ${e.department_name ?? 'No department'}${e.designation ? `, ${e.designation}` : ''}`);
+      L.push(`${e.name}${e.employee_code ? ` (${e.employee_code})` : ''} — ${e.department_name ?? 'No department'}${e.designation ? `, ${e.designation}` : ''}${e.company_name ? ` · ${e.company_name}` : ''}`);
       const st = e.submission === 'submitted' ? `Checklist complete${e.checklist?.is_late ? ' (late)' : ''}, submitted ${fmtDT(e.checklist?.submitted_at, v.timezone)}`
         : e.submission === 'partial' ? `Checklist PARTIAL — ${e.checklist?.answered_items}/${e.checklist?.total_items} answered`
           : e.submission === 'not_submitted' ? 'Checklist NOT SUBMITTED' : 'No checklist assigned';
@@ -254,6 +297,12 @@ export function eodText(v: EodView, mode: 'consolidated' | 'employee', meta: { g
       if (e.tasks_completed.length) L.push(`  Completed tasks: ${e.tasks_completed.map((t: any) => `${t.task_key} ${t.title}`).join('; ')}`);
       if (e.tasks_pending.length) L.push(`  Pending tasks (${e.tasks_pending.length}): ${e.tasks_pending.slice(0, 8).map((t: any) => `${t.task_key} ${t.title}${t.overdue ? ' [OVERDUE]' : ''}${t.status === 'blocked' ? ' [BLOCKED]' : ''}`).join('; ')}${e.tasks_pending.length > 8 ? '; …' : ''}`);
       if (e.daily_report) L.push(`  Daily report: ${e.daily_report.work_completed}${has(e.daily_report.challenges) ? ` · Challenges: ${e.daily_report.challenges}` : ''}`);
+      if (e.activities.length) {
+        L.push(`  Activities (${e.activities.length}):`);
+        for (const a of e.activities) L.push(`    • ${fmtDT(a.occurred_at, v.timezone).slice(-5)} ${actLine(a)}`);
+      }
+      if (e.personal_report?.content) L.push(`  Personal EOD report (finalized):\n      ${indent(e.personal_report.content.trim(), '      ')}`);
+      else if (e.personal_report) L.push('  Personal EOD report: draft, not finalized');
       L.push('');
     }
   }
@@ -285,10 +334,10 @@ export async function sendEodXlsx(res: Response, v: EodView, mode: string) {
   v.departments.forEach((d: any) => dep.addRow({ name: d.name, hod: d.hod_name, employees: d.employees, expected: d.expected, submitted: d.submitted, partial: d.partial, not_submitted: d.not_submitted, compliance: d.compliance, tc: d.tasks_completed.length, tp: d.tasks_pending, to: d.tasks_overdue }));
 
   const emp = wb.addWorksheet('Employees');
-  head(emp, [{ header: 'Employee', key: 'name', width: 24 }, { header: 'Code', key: 'code', width: 10 }, { header: 'Department', key: 'dept', width: 20 }, { header: 'Submission', key: 'sub', width: 14 },
+  head(emp, [{ header: 'Employee', key: 'name', width: 24 }, { header: 'Code', key: 'code', width: 10 }, { header: 'Department', key: 'dept', width: 20 }, { header: 'Company', key: 'company', width: 22 }, { header: 'Submission', key: 'sub', width: 14 },
     { header: 'Answered', key: 'ans' }, { header: 'Total', key: 'tot' }, { header: 'Mandatory unanswered', key: 'mu' }, { header: 'Submitted at', key: 'at', width: 18 }, { header: 'Late', key: 'late', width: 8 },
-    { header: 'Tasks completed', key: 'tc' }, { header: 'Pending tasks', key: 'tp' }, { header: 'Overdue tasks', key: 'to' }]);
-  v.employees.forEach((e: any) => emp.addRow({ name: e.name, code: e.employee_code, dept: e.department_name, sub: e.submission.replace(/_/g, ' '), ans: e.checklist?.answered_items ?? '', tot: e.checklist?.total_items ?? '',
+    { header: 'Tasks completed', key: 'tc' }, { header: 'Pending tasks', key: 'tp' }, { header: 'Overdue tasks', key: 'to' }, { header: 'Activities', key: 'act' }, { header: 'Personal report', key: 'pr', width: 14 }]);
+  v.employees.forEach((e: any) => emp.addRow({ name: e.name, code: e.employee_code, dept: e.department_name, company: e.company_name ?? '', act: e.activities.length, pr: e.personal_report?.status ?? '', sub: e.submission.replace(/_/g, ' '), ans: e.checklist?.answered_items ?? '', tot: e.checklist?.total_items ?? '',
     mu: e.unanswered.filter((u: any) => u.required).length, at: e.checklist?.submitted_at ? fmtDT(e.checklist.submitted_at, v.timezone) : '', late: e.checklist?.is_late ? 'yes' : '',
     tc: e.tasks_completed.length, tp: e.tasks_pending.length, to: e.tasks_pending.filter((t: any) => t.overdue).length }));
 
@@ -312,6 +361,22 @@ export async function sendEodXlsx(res: Response, v: EodView, mode: string) {
     d.urls.forEach((u: any) => met.addRow({ d: d.name, k: 'url', q: `${u.employee} — ${u.question}`, v: u.url, x: u.published_at ? `published ${String(u.published_at).replace('T', ' ').slice(0, 16)}` : u.label ?? '' }));
     d.blockers.forEach((b: any) => met.addRow({ d: d.name, k: 'blocker', q: `${b.employee} — ${b.question}`, v: b.text, x: b.source }));
     d.delays.forEach((b: any) => met.addRow({ d: d.name, k: 'delay', q: `${b.employee} — ${b.question}`, v: b.text, x: b.source }));
+  }
+
+  const ac = wb.addWorksheet('Activities');
+  head(ac, [{ header: 'Employee', key: 'e', width: 22 }, { header: 'Time', key: 't', width: 8 }, { header: 'Category', key: 'c', width: 30 }, { header: 'Description', key: 'd', width: 60 },
+    { header: 'With', key: 'w', width: 28 }, { header: 'Project', key: 'p', width: 20 }, { header: 'Status', key: 's', width: 12 }, { header: 'Minutes', key: 'm', width: 9 },
+    { header: 'Follow-up', key: 'f', width: 30 }, { header: 'Resolved', key: 'r', width: 10 }, { header: 'Bugs', key: 'b', width: 7 }]);
+  for (const e of v.employees) {
+    e.activities.forEach((a: any) => ac.addRow({ e: e.name, t: fmtDT(a.occurred_at, v.timezone).slice(-5), c: a.category, d: a.description, w: [...(a.participants ?? []), ...(a.departments ?? []).map((d: string) => `${d} team`)].join(', '),
+      p: a.project_name ?? '', s: String(a.status).replace('_', ' '), m: a.duration_minutes ?? '', f: a.follow_up_required ? `${a.follow_up_done_at ? 'done' : 'open'}${a.follow_up_note ? `: ${a.follow_up_note}` : ''}` : '',
+      r: a.issue_resolved === true ? 'yes' : a.issue_resolved === false ? 'no' : '', b: a.bugs_found ?? '' }));
+  }
+  ac.getColumn('d').alignment = { wrapText: true, vertical: 'top' };
+  if (v.companies.length) {
+    const co = wb.addWorksheet('Companies');
+    head(co, [{ header: 'Company', key: 'n', width: 30 }, { header: 'Employees', key: 'e' }, { header: 'Expected', key: 'x' }, { header: 'Submitted', key: 's' }, { header: 'Compliance %', key: 'c' }, { header: 'Activities', key: 'a' }, { header: 'Tasks completed', key: 't' }]);
+    v.companies.forEach((c: any) => co.addRow({ n: c.name, e: c.employees, x: c.expected, s: c.submitted, c: c.compliance, a: c.activities, t: c.tasks_completed }));
   }
 
   const tk = wb.addWorksheet('Tasks');
@@ -372,6 +437,7 @@ export function sendEodPdf(res: Response, v: EodView, mode: 'consolidated' | 'em
       sec('Key metrics', d.metrics.map((m: any) => (m.total === null ? `${m.question}: not reported (0 of ${m.asked})` : `${m.question}: ${m.total.toLocaleString('en-US')}${m.unit ? ` ${m.unit}` : ''} (${m.reported} of ${m.asked} reported)`)));
       sec('Completed work', d.work_done.map((w: any) => `${w.employee}: ${w.text}`));
       sec('Tasks completed', d.tasks_completed.map((t: any) => `${t.employee}: ${t.task_key} ${t.title}${t.project_name ? ` [${t.project_name}]` : ''}`));
+      sec('Daily activities & coordination', d.activities.map((a: any) => `${a.employee}: ${a.text}`));
       sec('Progress & deadlines', d.progress.map((w: any) => `${w.employee} — ${w.question}: ${w.text}`));
       sec('Campaigns', d.campaigns.map((w: any) => `${w.employee} — ${w.question}: ${w.text}`));
       sec('Published / supporting URLs', d.urls.map((u: any) => `${u.employee}: ${u.url}${u.published_at ? ` (published ${String(u.published_at).replace('T', ' ').slice(0, 16)})` : ''}`));
@@ -399,6 +465,8 @@ export function sendEodPdf(res: Response, v: EodView, mode: 'consolidated' | 'em
       if (e.tasks_completed.length) { h2('Completed tasks'); e.tasks_completed.forEach((t: any) => bullet(`${t.task_key} ${t.title}${t.project_name ? ` [${t.project_name}]` : ''}`)); }
       if (e.tasks_pending.length) { h2(`Pending tasks (${e.tasks_pending.length})`); e.tasks_pending.slice(0, 15).forEach((t: any) => bullet(`${t.task_key} ${t.title} — ${String(t.status).replace(/_/g, ' ')}, ${t.progress}%${t.overdue ? ' · OVERDUE' : ''}`)); }
       if (e.daily_report) { h2('Daily report'); bullet(e.daily_report.work_completed); if (has(e.daily_report.challenges)) bullet(`Challenges: ${e.daily_report.challenges}`); }
+      if (e.activities.length) { h2(`Activities (${e.activities.length})`); e.activities.forEach((a: any) => bullet(`${fmtDT(a.occurred_at, v.timezone).slice(-5)} ${actLine(a)}`)); }
+      if (e.personal_report?.content) { h2('Personal EOD report (finalized)'); e.personal_report.content.split('\n').filter((l: string) => l.trim()).forEach((l: string) => bullet(l.replace(/^•\s*/, ''))); }
     }
   }
   const range = doc.bufferedPageRange();

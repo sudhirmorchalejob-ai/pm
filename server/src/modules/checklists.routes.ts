@@ -260,7 +260,7 @@ const orgToday = async () => localDateIn(await getSetting('default_timezone'));
 /** Submissions of everyone in scope for one date. */
 router.get('/team', monitorPerm, async (req, res) => {
   const u = me(req);
-  const f = parse(z.object({ date: zDate.optional(), department_id: zId.optional(), status: z.enum(['submitted', 'in_progress', 'pending', 'overdue', 'none']).optional(), q: z.string().max(100).optional() }), req.query);
+  const f = parse(z.object({ date: zDate.optional(), department_id: zId.optional(), company_id: zId.optional(), status: z.enum(['submitted', 'in_progress', 'pending', 'overdue', 'none']).optional(), q: z.string().max(100).optional() }), req.query);
   const date = f.date ?? (await orgToday());
   const qb = scopeUsers(db('users as u'), u).leftJoin('departments as d', 'd.id', 'u.department_id')
     .leftJoin('checklists as c', (j) => j.on('c.user_id', 'u.id').andOnVal('c.checklist_date', date))
@@ -269,6 +269,7 @@ router.get('/team', monitorPerm, async (req, res) => {
       'c.total_items', 'c.answered_items', 'c.required_items', 'c.required_answered', 'c.due_at', 'c.submitted_at', 'c.is_late')
     .orderBy(['d.name', 'u.name']);
   if (f.department_id) qb.where('u.department_id', f.department_id);
+  if (f.company_id) qb.where('u.company_id', f.company_id);
   if (f.q) qb.whereILike('u.name', `%${f.q}%`);
   if (f.status === 'none') qb.whereNull('c.id');
   else if (f.status === 'overdue') qb.whereNot('c.status', 'submitted').where('c.due_at', '<', new Date());
@@ -282,7 +283,7 @@ router.get('/dashboard', monitorPerm, async (req, res) => {
   const u = me(req);
   const today = await orgToday();
   const f = parse(z.object({
-    from: zDate.optional(), to: zDate.optional(), department_id: zId.optional(), user_id: zId.optional(),
+    from: zDate.optional(), to: zDate.optional(), department_id: zId.optional(), user_id: zId.optional(), company_id: zId.optional(),
     status: z.enum(['submitted', 'in_progress', 'pending', 'overdue', 'late']).optional(),
   }), req.query);
   const to = f.to ?? today;
@@ -294,6 +295,7 @@ router.get('/dashboard', monitorPerm, async (req, res) => {
 
   const people = inScope(db('users as u').whereNull('u.deleted_at'), 'u.id');
   if (f.department_id) people.where('u.department_id', f.department_id);
+  if (f.company_id) people.where('u.company_id', f.company_id);
   const [counts] = await people.clone().select(
     db.raw('count(*) FILTER (WHERE u.is_active)::int AS active_employees'),
     db.raw('count(*) FILTER (WHERE NOT u.is_active)::int AS deactivated_employees'));
@@ -304,6 +306,7 @@ router.get('/dashboard', monitorPerm, async (req, res) => {
   const base = () => {
     const q = inScope(db('checklists as c').join('users as u', 'u.id', 'c.user_id'), 'c.user_id').whereBetween('c.checklist_date', [from, to]).where('c.total_items', '>', 0);
     if (f.department_id) q.where('c.department_id', f.department_id);
+    if (f.company_id) q.where('u.company_id', f.company_id);
     if (f.user_id) q.where('c.user_id', f.user_id);
     if (f.status === 'overdue') q.whereNot('c.status', 'submitted').where('c.due_at', '<', new Date());
     else if (f.status === 'late') q.where('c.is_late', true);
@@ -332,8 +335,9 @@ router.get('/dashboard', monitorPerm, async (req, res) => {
 
   // fixed windows independent of the chosen range
   const windowRate = async (start: string, end: string) => {
-    const q = inScope(db('checklists as c'), 'c.user_id').whereBetween('c.checklist_date', [start, end]).where('c.total_items', '>', 0);
+    const q = inScope(db('checklists as c').join('users as u', 'u.id', 'c.user_id'), 'c.user_id').whereBetween('c.checklist_date', [start, end]).where('c.total_items', '>', 0);
     if (f.department_id) q.where('c.department_id', f.department_id);
+    if (f.company_id) q.where('u.company_id', f.company_id);
     const [r] = await q.select(db.raw('count(*)::int AS total'), db.raw(`count(*) FILTER (WHERE c.status = 'submitted')::int AS completed`));
     return { ...r, compliance: pct(r.completed, r.total) };
   };

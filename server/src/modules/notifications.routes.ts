@@ -6,7 +6,7 @@ import { AuthUser, can, me, requirePerm } from '../auth/middleware';
 import { loadVisibleProject, loadVisibleTask, scopeUsers } from '../auth/scope';
 import { audit, diff } from '../lib/audit';
 import { badRequest, forbidden, notFound } from '../lib/errors';
-import { idParam, paginate, parse, zDate, zId, zOptId, zOptStr, zPage, zTime } from '../lib/http';
+import { idParam, paginate, parse, zDate, zId, zOptId, zOptStr, zPage, zTime, patchOf } from '../lib/http';
 import { pushRealtime } from '../lib/realtime';
 import { describeRule, isValidTimezone, localToUtc, occurrencesBetween, RecurrenceRule } from '../lib/recurrence';
 import { CHANNELS, channelStatus } from '../notifications/channels';
@@ -218,7 +218,7 @@ router.patch('/schedules/:id', requirePerm('notifications.schedule'), async (req
   const u = me(req);
   const s = await loadOwnSchedule(u, idParam(req));
   if (['cancelled', 'completed'].includes(s.status)) throw badRequest('Reminder is no longer active');
-  const b = parse(scheduleSchema.partial().omit({ schedule_type: true }), req.body);
+  const b = parse(patchOf(scheduleSchema).omit({ schedule_type: true }), req.body);
   const patch: any = { updated_at: db.fn.now() };
   for (const k of ['title', 'description', 'message', 'channels'] as const) if (b[k] !== undefined) patch[k] = b[k];
   const tz = b.timezone ?? s.timezone;
@@ -346,7 +346,7 @@ router.post('/rules', requirePerm('notifications.rules.manage'), async (req, res
 router.patch('/rules/:id', requirePerm('notifications.rules.manage'), async (req, res) => {
   const before = await db('notification_rules').where({ id: idParam(req) }).first();
   if (!before) throw notFound();
-  const b = parse(ruleSchema.partial(), req.body);
+  const b = parse(patchOf(ruleSchema), req.body);
   const [row] = await db('notification_rules').where({ id: before.id }).update({ ...b, updated_at: db.fn.now() }).returning('*');
   const d = diff(before, b);
   await audit(req, { action: 'notification_rule.updated', entityType: 'notification_rule', entityId: before.id, before: d.before, after: d.after });
@@ -384,7 +384,7 @@ router.post('/escalation-rules', requirePerm('escalations.manage'), async (req, 
 router.patch('/escalation-rules/:id', requirePerm('escalations.manage'), async (req, res) => {
   const before = await db('escalation_rules').where({ id: idParam(req) }).first();
   if (!before) throw notFound();
-  const b = parse(escSchema.partial(), req.body);
+  const b = parse(patchOf(escSchema), req.body);
   const [row] = await db('escalation_rules').where({ id: before.id }).update({ ...b, updated_at: db.fn.now() }).returning('*');
   const d = diff(before, b);
   await audit(req, { action: 'escalation_rule.updated', entityType: 'escalation_rule', entityId: before.id, before: d.before, after: d.after });

@@ -32,6 +32,7 @@ const MyChecklist = lazy(() => import('./pages/checklist/MyChecklist'));
 const QuestionBuilder = lazy(() => import('./pages/checklist/QuestionBuilder'));
 const Compliance = lazy(() => import('./pages/checklist/Compliance'));
 const EodReports = lazy(() => import('./pages/checklist/EodReports'));
+const MyWork = lazy(() => import('./pages/mywork/MyWork'));
 
 function Guard({ perms, children }: { perms?: string[]; children: ReactNode }) {
   const { can } = useAuth();
@@ -74,6 +75,7 @@ export function App() {
           <Route path="/checklist" element={<Guard perms={['checklists.submit']}><MyChecklist /></Guard>} />
           <Route path="/questions" element={<Guard perms={['questions.manage']}><QuestionBuilder /></Guard>} />
           <Route path="/compliance" element={<Guard perms={['checklists.monitor']}><Compliance /></Guard>} />
+          <Route path="/my-work" element={<Guard perms={['activities.log']}><MyWork /></Guard>} />
           <Route path="/eod" element={<Guard perms={['eod.view', 'eod.generate']}><EodReports /></Guard>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

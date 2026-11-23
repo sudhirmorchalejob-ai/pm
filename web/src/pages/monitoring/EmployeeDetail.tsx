@@ -6,6 +6,8 @@ import { BarsChart, LinesChart, Meter } from '../../components/charts';
 import { TaskList } from '../../components/TaskBits';
 import { Card, Chips, DataTable, ErrorState, KV, Loading, PageHeader, Stat, StatusBadge, Tabs } from '../../components/ui';
 import { defaultRange, RangeFilters } from './EmployeesMonitor';
+import { useAuth } from '../../lib/auth';
+import { EmployeeWorkTabs } from '../mywork/admin';
 
 export default function EmployeeDetail() {
   const id = Number(useParams().id);
@@ -13,6 +15,7 @@ export default function EmployeeDetail() {
   const [status, setStatus] = useState<string[]>([]);
   const [priority, setPriority] = useState<string[]>([]);
   const [tab, setTab] = useState('tasks');
+  const { can } = useAuth();
   const { data, isLoading, error } = useApi<any>(['monitor-emp', id], `/monitoring/employees/${id}`, { ...f, department_id: undefined, project_id: f.project_id || undefined, status, priority });
   if (isLoading) return <Loading />;
   if (error) return <ErrorState error={error} />;
@@ -63,6 +66,7 @@ export default function EmployeeDetail() {
       {tab === 'reports' && <Card pad={false}><DataTable rows={data.daily_reports} columns={[
         { key: 'report_date', header: 'Date', render: (r: any) => fmtDate(r.report_date) }, { key: 'work_completed', header: 'Completed', render: (r: any) => <span className="line-clamp-2 text-sm">{r.work_completed}</span> },
         { key: 'hours_spent', header: 'Hours' }, { key: 'status', header: 'Status', render: (r: any) => <StatusBadge status={r.status} /> }]} /></Card>}
+      {can('activities.log', 'activities.view_team') && <EmployeeWorkTabs userId={id} />}
     </div>
   );
 }

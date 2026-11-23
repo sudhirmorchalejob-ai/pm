@@ -53,7 +53,7 @@ notification pipeline; EOD reports are JSON snapshots in `eod_reports`, filtered
 
 Two independent layers:
 
-1. **Permissions** (what you may do): 37 keys in `server/src/auth/permissions.ts`, assigned per role **per organization** in
+1. **Permissions** (what you may do): 44 keys in `server/src/auth/permissions.ts`, assigned per role **per organization** in
    `role_permissions` and editable at runtime (Settings → Roles & permissions; Super Admin always has all).
 2. **Scope** (which rows you may see), fixed per role: `organization` (Super Admin, Director, Management Viewer),
    `project` (Project Manager: projects they manage/belong to), `department` (HOD), `team` (Team Leader), `self` (Employee).

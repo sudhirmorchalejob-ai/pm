@@ -5,7 +5,7 @@ import { db } from '../db/knex';
 import { me, requirePerm } from '../auth/middleware';
 import { audit, diff } from '../lib/audit';
 import { badRequest, notFound } from '../lib/errors';
-import { idParam, parse, zDate, zOptId, zOptStr, zPriority, zTime } from '../lib/http';
+import { idParam, parse, zDate, zOptId, zOptStr, zPriority, zTime, patchOf } from '../lib/http';
 import { isValidTimezone, localToUtc } from '../lib/recurrence';
 import { cancelSchedule } from '../notifications/service';
 import { createSchedule } from './notifications.routes';
@@ -91,7 +91,7 @@ router.patch('/:id', requirePerm('agenda.use'), async (req, res) => {
   const u = me(req);
   const item = await db('management_agenda').where({ id: idParam(req), owner_id: u.id }).first();
   if (!item) throw notFound();
-  const b = parse(schema.partial().extend({ status: z.enum(['open', 'done', 'cancelled']).optional() }), req.body);
+  const b = parse(patchOf(schema).extend({ status: z.enum(['open', 'done', 'cancelled']).optional() }), req.body);
   const patch: any = { updated_at: db.fn.now() };
   for (const k of ['title', 'description', 'priority', 'notes', 'reminder_minutes_before', 'related_department_id', 'related_project_id', 'status'] as const) if (b[k] !== undefined) patch[k] = b[k];
   const tz = b.timezone ?? item.timezone;

@@ -23,13 +23,15 @@ export default function EodReports() {
   const date = sp.get('date') ?? todayIso();
   const reportId = sp.get('report') ?? '';
   const [dept, setDept] = useState('');
+  const [company, setCompany] = useState('');
   const [user, setUser] = useState<number | null>(null);
+  const { data: companies = [] } = useApi<any[]>(['companies'], '/org/companies');
   const [view, setView] = useState<'consolidated' | 'employee'>('consolidated');
   const [settings, setSettings] = useState(false);
   const { data: depts = [] } = useApi<any[]>(['departments'], '/org/departments');
   const live = reportId === 'live';
-  const query = { date, report_id: reportId && !live ? reportId : undefined, live: live ? 'true' : undefined, department_id: dept, user_id: user, view };
-  const { data, isLoading, error, refetch, isFetching } = useApi<any>(['eod', date, reportId, dept, user, view], '/eod', query);
+  const query = { date, report_id: reportId && !live ? reportId : undefined, live: live ? 'true' : undefined, department_id: dept, company_id: company || undefined, user_id: user, view };
+  const { data, isLoading, error, refetch, isFetching } = useApi<any>(['eod', date, reportId, dept, company, user, view], '/eod', query);
   const { data: hist } = useApi<any>(['eod-history'], '/eod/history');
   const generate = useAction(() => api('/eod/generate', { method: 'POST', body: { date } }), { invalidate: [['eod'], ['eod-history']], success: 'EOD report generated', onSuccess: () => setSp({ date }, { replace: true }) });
   const r = data?.report;
@@ -37,14 +39,15 @@ export default function EodReports() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="End-of-Day reports" subtitle="Consolidated from submitted checklists, tasks and daily reports. Nothing is filled in for people who did not submit."
+      <PageHeader title="End-of-Day reports" subtitle="Consolidated from submitted checklists, recorded activities, tasks and daily reports. Nothing is filled in for people who did not submit."
         actions={<>
           {can('eod.generate') && <button className="btn-secondary" onClick={() => setSettings(true)}><Settings2 className="h-4 w-4" /> Schedule</button>}
           {can('eod.generate') && <button className="btn-primary" disabled={generate.isPending} onClick={() => generate.mutate(undefined)}><RefreshCw className={clsx('h-4 w-4', generate.isPending && 'animate-spin')} /> Generate now</button>}
         </>} />
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5">
         <Field label="Date"><input className="input" type="date" max={todayIso()} value={date} onChange={(e) => setSp(e.target.value ? { date: e.target.value } : {}, { replace: true })} /></Field>
         <Field label="Department"><Select value={dept} onChange={setDept} placeholder="All departments" options={depts.map((d: any) => ({ value: d.id, label: d.name }))} /></Field>
+        {companies.length > 0 && <Field label="Company"><Select value={company} onChange={setCompany} placeholder="All companies" options={companies.map((c: any) => ({ value: c.id, label: c.name }))} /></Field>}
         <Field label="Employee" className="col-span-2 md:col-span-1"><UserPicker value={user} onChange={setUser} placeholder="All employees" departmentId={dept ? Number(dept) : null} /></Field>
         <div className="col-span-2 md:col-span-1"><span className="label">Format</span><Chips value={view} onChange={setView} options={[{ value: 'consolidated', label: 'Consolidated' }, { value: 'employee', label: 'Employee-wise' }]} /></div>
       </div>
@@ -78,6 +81,17 @@ export default function EodReports() {
             <Stat label="Pending tasks" value={r.summary.tasks_pending} hint={`${r.summary.tasks_overdue} overdue`} />
             <Stat label="Blocked tasks" value={r.summary.tasks_blocked} tone={r.summary.tasks_blocked ? 'warn' : 'default'} />
           </div>
+          {(r.companies ?? []).filter((c: any) => c.id !== null).length > 0 && (
+            <Card title="By company" pad={false}>
+              <div className="px-4 sm:px-0">
+                <DataTable rows={r.companies.map((c: any) => ({ ...c, id: c.id ?? 'none' }))} columns={[
+                  { key: 'name', header: 'Company' }, { key: 'employees', header: 'Employees' },
+                  { key: 'submitted', header: 'Checklists complete', render: (c: any) => (c.expected ? `${c.submitted}/${c.expected} (${pct(c.compliance)})` : '—') },
+                  { key: 'activities', header: 'Activities' }, { key: 'tasks_completed', header: 'Tasks completed' },
+                ]} />
+              </div>
+            </Card>
+          )}
 
           <Card title={<span className="flex items-center gap-1.5"><AlertTriangle className="h-4 w-4 text-amber-500" /> Not submitted / incomplete ({r.not_submitted.length})</span>} pad={false}>
             <div className="px-4 sm:px-0">
@@ -141,7 +155,7 @@ function Consolidated({ r }: { r: any }) {
   return (
     <div className="space-y-4">
       {r.departments.map((d: any) => {
-        const empty = !d.metrics.length && !d.work_done.length && !d.tasks_completed.length && !d.blockers.length && !d.delays.length && !d.campaigns.length && !d.urls.length && !d.progress.length && !d.pending_work.length && !d.plans.length && !d.other.length;
+        const empty = !d.metrics.length && !(d.activities ?? []).length && !d.work_done.length && !d.tasks_completed.length && !d.blockers.length && !d.delays.length && !d.campaigns.length && !d.urls.length && !d.progress.length && !d.pending_work.length && !d.plans.length && !d.other.length;
         return (
           <Card key={String(d.id)} title={<span>{d.name}{d.hod_name && <span className="muted text-xs font-normal"> · HOD {d.hod_name}</span>}</span>}
             actions={d.expected ? <span className="text-xs tabular-nums">{d.submitted}/{d.expected} complete · {pct(d.compliance)}</span> : <span className="muted text-xs">no checklists</span>}>
@@ -163,6 +177,7 @@ function Consolidated({ r }: { r: any }) {
                 )}
                 <Bullets title="Completed work" rows={d.work_done} render={(w) => <><b>{w.employee}:</b> {w.text}</>} />
                 <Bullets title="Tasks completed" rows={d.tasks_completed} render={(t) => <><b>{t.employee}:</b> {t.task_key} {t.title}{t.project_name ? <span className="muted"> · {t.project_name}</span> : null}</>} />
+                <Bullets title="Daily activities & coordination" rows={d.activities ?? []} render={(a) => <><b>{a.employee}:</b> {a.text}</>} />
                 <Bullets title="Progress & deadlines" rows={d.progress} render={(w) => <><b>{w.employee}</b> — {w.question}: {w.text}</>} />
                 <Bullets title="Campaigns" rows={d.campaigns} render={(w) => <><b>{w.employee}</b> — {w.question}: {w.text}</>} />
                 <Bullets title="Published / supporting URLs" rows={d.urls} render={(u) => <><b>{u.employee}:</b> <a className="break-all text-brand-600 hover:underline" href={u.url} target="_blank" rel="noreferrer noopener">{u.url}</a>{u.published_at && <span className="muted"> · published {String(u.published_at).replace('T', ' ').slice(0, 16)}</span>}</>} />
@@ -186,7 +201,7 @@ function EmployeeWise({ r }: { r: any }) {
   return (
     <div className="space-y-4">
       {r.employees.map((e: any) => (
-        <Card key={e.id} title={<span>{e.name}<span className="muted text-xs font-normal"> · {e.department_name ?? 'No department'}{e.designation ? `, ${e.designation}` : ''}</span></span>}
+        <Card key={e.id} title={<span>{e.name}<span className="muted text-xs font-normal"> · {e.department_name ?? 'No department'}{e.designation ? `, ${e.designation}` : ''}{e.company_name ? ` · ${e.company_name}` : ''}</span></span>}
           actions={e.submission === 'submitted' ? <StatusBadge status={e.checklist?.is_late ? 'late' : 'completed'} label={e.checklist?.is_late ? 'Complete (late)' : 'Complete'} />
             : e.submission === 'partial' ? <StatusBadge status="in_progress" label={`Partial ${e.checklist.answered_items}/${e.checklist.total_items}`} />
               : e.submission === 'not_submitted' ? <StatusBadge status="missed" label="Not submitted" /> : <span className="muted text-xs">No checklist</span>}>
@@ -212,6 +227,27 @@ function EmployeeWise({ r }: { r: any }) {
             <Bullets title={`Completed tasks (${e.tasks_completed.length})`} rows={e.tasks_completed} render={(t) => <>{t.task_key} {t.title}{t.project_name && <span className="muted"> · {t.project_name}</span>}</>} />
             <Bullets title={`Pending tasks (${e.tasks_pending.length})`} rows={e.tasks_pending.slice(0, 10)} render={(t) => <>{t.task_key} {t.title} <span className={t.overdue ? 'text-rose-600' : 'muted'}>· {humanize(t.status)}{t.overdue ? ' · overdue' : ''}</span></>} />
             {e.daily_report && <Bullets title="Daily report" rows={[e.daily_report]} render={(d) => <>{d.work_completed}{d.challenges && <span className="muted block">Challenges: {d.challenges}</span>}</>} />}
+            {(e.activities ?? []).length > 0 && (
+              <div className="lg:col-span-2">
+                <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Activities ({e.activities.length})</h4>
+                <ul className="space-y-1 text-sm">{e.activities.map((a: any) => (
+                  <li key={a.id} className="border-l-2 border-slate-200 pl-2 dark:border-slate-700">
+                    <span className="muted mr-1 tabular-nums">{new Date(a.occurred_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    <b>{a.category}:</b> {a.description}
+                    {(a.participants?.length > 0 || a.departments?.length > 0) && <span className="muted"> · with {[...(a.participants ?? []), ...(a.departments ?? []).map((d: string) => `${d} team`)].join(', ')}</span>}
+                    {a.project_name && <span className="muted"> · {a.project_name}</span>}
+                    {a.status !== 'completed' && <span className="text-amber-700 dark:text-amber-300"> · {humanize(a.status)}</span>}
+                  </li>
+                ))}</ul>
+              </div>
+            )}
+            {e.personal_report && (
+              <div className="lg:col-span-2">
+                <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Personal EOD report</h4>
+                {e.personal_report.content ? <pre className="whitespace-pre-wrap rounded-lg border bg-slate-50 p-3 font-sans text-sm dark:border-slate-700 dark:bg-slate-900">{e.personal_report.content}</pre>
+                  : <p className="muted text-sm">Draft — not finalized yet.</p>}
+              </div>
+            )}
           </div>
         </Card>
       ))}

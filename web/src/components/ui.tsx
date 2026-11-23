@@ -241,7 +241,7 @@ export function UserPicker({ value, onChange, multi = false, placeholder = 'Sele
             <li key={u.id}>
               <button type="button" className={clsx('flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-800', selected.includes(u.id) && 'bg-brand-50 dark:bg-brand-900/30')} onClick={() => toggle(u.id)}>
                 <Avatar name={u.name} size="sm" />
-                <span className="min-w-0 flex-1"><span className="block truncate">{u.name}</span><span className="muted block truncate text-xs">{u.designation ?? ''}{u.department_name ? ` · ${u.department_name}` : ''}</span></span>
+                <span className="min-w-0 flex-1"><span className="block truncate">{u.name}</span><span className="muted block truncate text-xs">{[u.designation, u.department_name, u.company_name].filter(Boolean).join(' · ')}</span></span>
               </button>
             </li>
           ))}

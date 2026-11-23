@@ -6,6 +6,7 @@ import { useApi, useLiveRefresh } from '../lib/hooks';
 import { BarsChart, HBarChart, Meter } from '../components/charts';
 import { TaskList } from '../components/TaskBits';
 import { Card, DataTable, ErrorState, Loading, PageHeader, Progress, Stat, StatusBadge } from '../components/ui';
+import { MyDayPanel, TeamTodayPanel } from './mywork/DashboardPanels';
 
 export default function Dashboard() {
   const { user, can } = useAuth();
@@ -24,6 +25,8 @@ export default function Dashboard() {
     <div className="space-y-5">
       <PageHeader title={`Good ${hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening'}, ${user!.name.split(' ')[0]}`} subtitle={`${data.role}${user?.department_name ? ` · ${user.department_name}` : ''}`}
         actions={data.pending_approvals > 0 && <Link to="/approvals" className="btn-primary"><ClipboardCheck className="h-4 w-4" /> {data.pending_approvals} pending approval{data.pending_approvals > 1 ? 's' : ''}</Link>} />
+
+      {can('activities.log') && <MyDayPanel />}
 
       {data.org && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
@@ -57,6 +60,8 @@ export default function Dashboard() {
           <Stat label="Revision requests" value={p.totals.revision_required} tone={p.totals.revision_required ? 'warn' : 'default'} />
         </div>
       )}
+
+      {can('checklists.monitor', 'activities.view_team') && <TeamTodayPanel />}
 
       {insights.data && (
         <Card title={<span className="inline-flex items-center gap-2"><Sparkles className="h-4 w-4 text-brand-500" /> Management summary</span>} actions={<span className="muted text-xs">rule-based · live data</span>}>

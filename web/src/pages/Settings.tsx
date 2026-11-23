@@ -6,11 +6,13 @@ import { humanize } from '../lib/format';
 import { useAction, useApi } from '../lib/hooks';
 import { Card, Chips, confirm, DataTable, Field, Loading, Modal, PageHeader, Select, Tabs } from '../components/ui';
 import { CHANNEL_OPTS } from './notifications/ReminderForm';
+import { ActivityCategoriesAdmin } from './mywork/admin';
 
 export default function SettingsPage() {
   const { can } = useAuth();
   const tabs = [
     ...(can('settings.manage') ? [{ value: 'general', label: 'General' }] : []),
+    ...(can('settings.manage') ? [{ value: 'activities', label: 'Activity categories' }] : []),
     ...(can('roles.manage') ? [{ value: 'roles', label: 'Roles & permissions' }] : []),
     ...(can('notifications.rules.manage') ? [{ value: 'rules', label: 'Notification rules' }] : []),
     ...(can('escalations.manage') ? [{ value: 'escalations', label: 'Escalation rules' }] : []),
@@ -21,6 +23,7 @@ export default function SettingsPage() {
       <PageHeader title="Settings" />
       <Tabs value={tab} onChange={setTab} tabs={tabs} />
       {tab === 'general' && <General />}
+      {tab === 'activities' && <ActivityCategoriesAdmin />}
       {tab === 'roles' && <Roles />}
       {tab === 'rules' && <Rules />}
       {tab === 'escalations' && <Escalations />}

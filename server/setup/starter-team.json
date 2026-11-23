@@ -1,0 +1,27 @@
+{
+  "description": "Initial company structure. Applied from Organization → Team setup (preview first). Re-applying never duplicates: existing companies, departments, designations and employees are matched by name (employees also by email) and kept. Everything can be edited afterwards.",
+  "companies": [
+    { "name": "Rajlaxmi Solutions", "code": "RAJLAXMI" },
+    { "name": "Averlon Enterprise Solutions", "code": "AVERLON" }
+  ],
+  "departments": [
+    { "name": "Development", "code": "DEV", "hod": "Sudhir", "template": "development" },
+    { "name": "DevOps", "code": "DEVOPS", "hod": "Sudhir" },
+    { "name": "Implementation", "code": "IMPL", "hod": "Sudhir", "template": "implementation" },
+    { "name": "Data Scrapper", "code": "DATASCR", "hod": "Sudhir", "template": "data_scrapper" },
+    { "name": "Digital Marketing", "code": "DM", "hod": "Sudhir", "template": "digital_marketing" }
+  ],
+  "employees": [
+    { "name": "Sudhir", "department": "Development", "role": "super_admin", "designations": ["Head of Department", "Full Stack Developer", "Project Coordinator"] },
+    { "name": "Neha", "department": "Development", "manager": "Sudhir" },
+    { "name": "Midhun", "department": "Development", "manager": "Sudhir" },
+    { "name": "Hardik", "department": "Development", "manager": "Sudhir" },
+    { "name": "Saurabh", "department": "Development", "manager": "Sudhir" },
+    { "name": "Utkarsh", "department": "DevOps", "manager": "Sudhir" },
+    { "name": "Snehal", "department": "Implementation", "manager": "Sudhir" },
+    { "name": "Jyotsana", "department": "Implementation", "manager": "Sudhir" },
+    { "name": "Sneha", "department": "Data Scrapper", "manager": "Sudhir" },
+    { "name": "Renuka", "department": "Digital Marketing", "company": "Rajlaxmi Solutions", "designations": ["Digital Marketing"], "manager": "Sudhir" },
+    { "name": "Rohini", "department": "Digital Marketing", "company": "Averlon Enterprise Solutions", "designations": ["Digital Marketing"], "manager": "Sudhir" }
+  ]
+}

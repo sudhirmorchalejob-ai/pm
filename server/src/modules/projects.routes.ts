@@ -6,7 +6,7 @@ import { assertCanManageProject, canManageProject, loadVisibleProject, scopeProj
 import { assertActiveUsers } from '../lib/employees';
 import { audit, diff } from '../lib/audit';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors';
-import { applySort, idParam, paginate, parse, zBoolQ, zCsv, zDate, zId, zOptId, zOptStr, zPage, zPriority } from '../lib/http';
+import { applySort, idParam, paginate, parse, zBoolQ, zCsv, zDate, zId, zOptId, zOptStr, zPage, zPriority, patchOf } from '../lib/http';
 import { emitEvent } from '../notifications/events';
 import { registerFile, upload } from './files';
 
@@ -149,7 +149,7 @@ router.patch('/:id', async (req, res) => {
   const u = me(req);
   const p = await loadVisibleProject(u, idParam(req));
   assertCanManageProject(u, p);
-  const body = parse(projectSchema.partial().omit({ member_ids: true, status: true }), req.body);
+  const body = parse(patchOf(projectSchema).omit({ member_ids: true, status: true }), req.body);
   checkDates(body.start_date ?? p.start_date, body.end_date ?? p.end_date);
   if (body.code && body.code.toLowerCase() !== String(p.code).toLowerCase() && await db('projects').where({ code: body.code }).first()) throw conflict('Project code already exists');
   // Budget changes on approved projects go through approval unless the user is an approver.
@@ -236,7 +236,7 @@ for (const [path, def] of Object.entries(SUBS)) {
     const subId = idParam(req, 'subId');
     const before = await db(def.table).where({ id: subId, project_id: p.id }).first();
     if (!before) throw notFound();
-    const body: any = parse(def.schema.partial(), req.body);
+    const body: any = parse(patchOf(def.schema), req.body);
     if (path === 'milestones' && body.status === 'completed' && before.status !== 'completed') {
       if (!can(me(req), 'approvals.decide')) {
         body.status = 'awaiting_approval';

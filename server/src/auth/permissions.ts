@@ -46,6 +46,8 @@ export const PERMISSIONS = {
   'checklists.monitor': ['checklists', 'Checklist compliance dashboard and submissions of people in scope'],
   'eod.view': ['checklists', 'View End-of-Day reports (limited to scope)'],
   'eod.generate': ['checklists', 'Generate EOD reports on demand and configure automatic generation'],
+  'activities.log': ['daily_work', 'Log own daily activities, personal tasks and personal EOD report'],
+  'activities.view_team': ['daily_work', 'View activities and coordination history of people in scope'],
 } as const;
 
 /** Permissions added after the first release. Existing organizations get their defaults granted once (see seedOrganization). */
@@ -68,7 +70,7 @@ export const ROLE_DEFS: Array<{ key: string; name: string; scope: ScopeLevel; ra
       'tasks.view', 'tasks.create', 'tasks.assign', 'tasks.review', 'monitoring.employees', 'monitoring.departments', 'approvals.decide',
       'analytics.view', 'analytics.view_all', 'reports.export', 'resources.view', 'meetings.manage', 'agenda.use',
       'notifications.schedule', 'notifications.schedule_others', 'notifications.logs.view_all', 'audit.view',
-      'checklists.submit', 'checklists.monitor', 'eod.view', 'eod.generate'],
+      'checklists.submit', 'checklists.monitor', 'eod.view', 'eod.generate', 'activities.log', 'activities.view_team'],
   },
   {
     key: 'project_manager', name: 'Project Manager', scope: 'project', rank: 70,
@@ -76,7 +78,7 @@ export const ROLE_DEFS: Array<{ key: string; name: string; scope: ScopeLevel; ra
     permissions: ['org.view', 'users.view', 'projects.view', 'projects.create', 'projects.manage', 'future_projects.manage',
       'future_projects.convert', 'tasks.view', 'tasks.create', 'tasks.assign', 'tasks.review', 'tasks.delete', 'tasks.update_own',
       'monitoring.employees', 'analytics.view', 'reports.export', 'resources.view', 'resources.manage', 'meetings.manage',
-      'agenda.use', 'notifications.schedule', 'notifications.schedule_others', 'reports.daily.submit', 'checklists.submit', 'eod.view'],
+      'agenda.use', 'notifications.schedule', 'notifications.schedule_others', 'reports.daily.submit', 'checklists.submit', 'eod.view', 'activities.log'],
   },
   {
     key: 'hod', name: 'Head of Department', scope: 'department', rank: 60,
@@ -84,24 +86,24 @@ export const ROLE_DEFS: Array<{ key: string; name: string; scope: ScopeLevel; ra
     permissions: ['org.view', 'users.view', 'projects.view', 'tasks.view', 'tasks.create', 'tasks.assign', 'tasks.review',
       'tasks.delete', 'tasks.update_own', 'reports.daily.submit', 'reports.daily.review', 'monitoring.employees',
       'monitoring.departments', 'analytics.view', 'reports.export', 'resources.view', 'meetings.manage', 'agenda.use',
-      'notifications.schedule', 'notifications.schedule_others', 'checklists.submit', 'checklists.monitor', 'eod.view'],
+      'notifications.schedule', 'notifications.schedule_others', 'checklists.submit', 'checklists.monitor', 'eod.view', 'activities.log', 'activities.view_team'],
   },
   {
     key: 'management_viewer', name: 'Management Viewer', scope: 'organization', rank: 50,
     description: 'Read-only organization-wide visibility',
     permissions: ['org.view', 'users.view', 'projects.view', 'tasks.view', 'monitoring.employees', 'monitoring.departments',
-      'analytics.view', 'analytics.view_all', 'reports.export', 'resources.view', 'notifications.schedule', 'checklists.monitor', 'eod.view'],
+      'analytics.view', 'analytics.view_all', 'reports.export', 'resources.view', 'notifications.schedule', 'checklists.monitor', 'eod.view', 'activities.view_team'],
   },
   {
     key: 'team_leader', name: 'Team Leader', scope: 'team', rank: 40,
     description: 'Distributes and monitors team work',
     permissions: ['org.view', 'users.view', 'projects.view', 'tasks.view', 'tasks.create', 'tasks.assign', 'tasks.update_own',
       'reports.daily.submit', 'reports.daily.review', 'monitoring.employees', 'analytics.view', 'resources.view',
-      'meetings.manage', 'agenda.use', 'notifications.schedule', 'notifications.schedule_others', 'checklists.submit', 'checklists.monitor', 'eod.view'],
+      'meetings.manage', 'agenda.use', 'notifications.schedule', 'notifications.schedule_others', 'checklists.submit', 'checklists.monitor', 'eod.view', 'activities.log', 'activities.view_team'],
   },
   {
     key: 'employee', name: 'Employee', scope: 'self', rank: 10,
     description: 'Works on assigned tasks and submits daily reports',
-    permissions: ['projects.view', 'tasks.view', 'tasks.update_own', 'reports.daily.submit', 'analytics.view', 'notifications.schedule', 'checklists.submit'],
+    permissions: ['projects.view', 'tasks.view', 'tasks.update_own', 'reports.daily.submit', 'analytics.view', 'notifications.schedule', 'checklists.submit', 'activities.log'],
   },
 ];

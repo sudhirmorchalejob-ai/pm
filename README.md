@@ -3,7 +3,7 @@
 A multi-tenant full-stack platform — any number of organizations register from the sign-in page and get isolated
 workspaces (PostgreSQL row-level security) — for running an organization's work in one place: departments, HODs, teams and employees;
 active and **future** projects; tasks with an approval-gated workflow; daily work reports; employee and department
-monitoring; a **dynamic daily questionnaire** (question builder, department templates, automated checklists with revisions, compliance dashboard and automatic **End-of-Day reports**); a **persistent server-side notification scheduler** (any date, any time, any timezone, recurring,
+monitoring; a **dynamic daily questionnaire** (question builder, department templates, automated checklists with revisions, compliance dashboard and automatic **End-of-Day reports**); **My Daily Work & Activities** (few-second quick activity entry from the dashboard or phone, personal and repeating tasks, coordination history, an editable personal EOD report to paste into Bitrix24); companies (business entities) with company-wise reporting; a **persistent server-side notification scheduler** (any date, any time, any timezone, recurring,
 deadline-relative); escalations; approvals; reports with Excel/PDF export; calendar, Gantt and resource planning;
 meetings; and a complete audit trail. Responsive from phones to large monitors, light and dark themes.
 
@@ -64,12 +64,12 @@ To run the worker as its own process (recommended in production): set `RUN_WORKE
 ## Tests
 
 ```bash
-cd server && npm test                       # 78 unit + integration tests (needs DB "orgpm_test" owned by orgpm_app + Redis)
+cd server && npm test                       # 88 unit + integration tests (needs DB "orgpm_test" owned by orgpm_app + Redis)
 cd web && npx playwright install chromium   # once
 E2E_BASE_URL=http://localhost:5173 npx playwright test   # e2e against a running, demo-seeded stack
 ```
 
-Test coverage includes the questionnaire (frequency/DST rules, answer validation, conditional questions, idempotent checklist generation, drafts/submission, append-only revisions with stale-edit protection, scoped monitoring, one-time reminders and escalations, EOD consolidation/exports, automatic EOD once per day, department transfers and deactivation), organization registration and cross-tenant isolation (data, settings, permission matrix, dashboards), authentication (refresh rotation + reuse detection, lockout), RBAC and data scoping per role,
+Test coverage includes daily work (idempotent team setup with preview, quick activities with department participants, append-only activity revisions and stale-edit protection, coordination history visibility, recurring personal tasks with per-occurrence status, reminders sent once, personal EOD generated only from entries then finalized, company filters in the EOD report), the questionnaire (frequency/DST rules, answer validation, conditional questions, idempotent checklist generation, drafts/submission, append-only revisions with stale-edit protection, scoped monitoring, one-time reminders and escalations, EOD consolidation/exports, automatic EOD once per day, department transfers and deactivation), organization registration and cross-tenant isolation (data, settings, permission matrix, dashboards), authentication (refresh rotation + reuse detection, lockout), RBAC and data scoping per role,
 organization CRUD, the full assign → progress → submit → revision → approve workflow, extensions, dependencies and
 cycle detection, future project approval + conversion, budget approvals, daily reports, KPI reports and exports,
 custom reminders (timezone conversion, exact-once firing under concurrency, recurring advance, pause/resume/reschedule/cancel,
@@ -85,6 +85,7 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): Render Blueprint (`render.yaml`) o
 
 - [Architecture & data model (ERD)](docs/ARCHITECTURE.md)
 - [Daily questionnaire, checklists & EOD reports](docs/CHECKLISTS.md) — incl. the data-preserving migration strategy
+- [My Daily Work & Activities, companies & team setup](docs/DAILY-WORK.md) — incl. migration 004
 - [Notification scheduler & escalations](docs/NOTIFICATIONS.md)
 - [KPI definitions](docs/KPIS.md)
 - [Security](docs/SECURITY.md)

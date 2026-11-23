@@ -1,22 +1,28 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowRightLeft, KeyRound, Pencil, Plus, Power, UserPlus, Users as UsersIcon } from 'lucide-react';
+import { ArrowRightLeft, Building, KeyRound, Pencil, Plus, Power, UserPlus, Users as UsersIcon, Wand2 } from 'lucide-react';
 import { api, ApiError } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { fmtDate, fmtDateTime, fromNow, humanize } from '../lib/format';
 import { useAction, useApi, useDebounced } from '../lib/hooks';
-import { Avatar, Card, confirm, DataTable, Empty, Field, Loading, Modal, PageHeader, Pagination, SearchInput, Select, StatusBadge, Tabs, UserPicker } from '../components/ui';
+import { Avatar, Card, clsx, confirm, DataTable, Empty, Field, Loading, Modal, PageHeader, Pagination, SearchInput, Select, StatusBadge, Tabs, UserPicker } from '../components/ui';
+import { TeamSetupModal } from './TeamSetup';
 
 export default function Organization() {
   const [sp, setSp] = useSearchParams();
   const tab = sp.get('tab') ?? 'departments';
+  const { can } = useAuth();
+  const [setup, setSetup] = useState(false);
   return (
     <div>
-      <PageHeader title="Organization" subtitle="Departments, teams, employees and reporting lines" />
+      <PageHeader title="Organization" subtitle="Companies, departments, teams, employees and reporting lines"
+        actions={can('users.manage') && can('org.manage') && <button className="btn-secondary" onClick={() => setSetup(true)}><Wand2 className="h-4 w-4" /> Team setup</button>} />
       <Tabs value={tab} onChange={(t) => setSp({ tab: t }, { replace: true })} tabs={[
         { value: 'departments', label: 'Departments' }, { value: 'teams', label: 'Teams' }, { value: 'users', label: 'Employees' },
-        { value: 'designations', label: 'Designations' }, { value: 'chart', label: 'Reporting hierarchy' },
+        { value: 'companies', label: 'Companies' }, { value: 'designations', label: 'Designations' }, { value: 'chart', label: 'Reporting hierarchy' },
       ]} />
+      <TeamSetupModal open={setup} onClose={() => setSetup(false)} />
+      {tab === 'companies' && <Companies />}
       {tab === 'departments' && <Departments />}
       {tab === 'teams' && <Teams />}
       {tab === 'users' && <Users />}
@@ -170,12 +176,14 @@ function Users() {
   const [role, setRole] = useState('');
   const [status, setStatus] = useState('');
   const [active, setActive] = useState('true');
+  const [company, setCompany] = useState('');
   const [page, setPage] = useState(1);
   const [edit, setEdit] = useState<any>(null);
+  const { data: companies = [] } = useApi<any[]>(['companies'], '/org/companies');
   const [transfer, setTransfer] = useState<any>(null);
   const { data: depts = [] } = useApi<any[]>(['departments'], '/org/departments');
   const { data: roles = [] } = useApi<any[]>(['roles'], '/org/roles');
-  const { data, isLoading } = useApi<any>(['users'], '/org/users', { q: dq, department_id: dept || undefined, role: role || undefined, status: status || undefined, active: active || undefined, page });
+  const { data, isLoading } = useApi<any>(['users'], '/org/users', { q: dq, department_id: dept || undefined, company_id: company || undefined, role: role || undefined, status: status || undefined, active: active || undefined, page });
   const toggleActive = useAction(async (u: any) => {
     const reason = await confirm({ title: u.is_active ? `Deactivate ${u.name}?` : `Reactivate ${u.name}?`, danger: u.is_active, confirmLabel: u.is_active ? 'Deactivate' : 'Reactivate',
       message: u.is_active ? 'They lose access and stop receiving tasks, questions and notifications. All their tasks, answers, reports and history are kept.' : 'They can sign in again and will receive assignments and checklists.',
@@ -186,9 +194,10 @@ function Users() {
   const reset = useAction((id: number) => api(`/org/users/${id}/reset-password`, { method: 'POST' }), { onSuccess: (r: any) => confirm({ title: 'Temporary password', message: <>Share securely with the employee — they must change it at first sign-in:<pre className="mt-2 rounded bg-slate-100 p-2 dark:bg-slate-800">{r.temporaryPassword}</pre></>, confirmLabel: 'Done' }) });
   return (
     <>
-      <Card className="mb-4"><div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_180px_180px_150px_150px_auto]">
+      <Card className="mb-4"><div className="grid gap-2 md:grid-cols-3 xl:grid-cols-[minmax(0,1fr)_170px_170px_170px_150px_150px_auto]">
         <SearchInput value={q} onChange={(v) => { setQ(v); setPage(1); }} placeholder="Name, email or code" />
         <Select value={dept} onChange={setDept} placeholder="All departments" options={depts.map((d: any) => ({ value: d.id, label: d.name }))} />
+        <Select value={company} onChange={(v) => { setCompany(v); setPage(1); }} placeholder="All companies" options={companies.map((c: any) => ({ value: c.id, label: c.name }))} aria-label="Company" />
         <Select value={role} onChange={setRole} placeholder="All roles" options={roles.map((r: any) => ({ value: r.key, label: r.name }))} />
         <Select value={status} onChange={setStatus} placeholder="Any employment status" options={['active', 'on_leave', 'notice', 'exited'].map((s) => ({ value: s, label: humanize(s) }))} />
         <Select value={active} onChange={(v) => { setActive(v); setPage(1); }} placeholder="Active & deactivated" options={[{ value: 'true', label: 'Active' }, { value: 'false', label: 'Deactivated' }]} aria-label="Account status" />
@@ -197,7 +206,8 @@ function Users() {
       <Card pad={false}>{isLoading ? <Loading /> : <div className="px-4 sm:px-0">
         <DataTable rows={data.items} onRowClick={(u: any) => can('users.manage') ? setEdit(u) : nav(`/monitoring/employees/${u.id}`)} columns={[
           { key: 'name', header: 'Employee', render: (u: any) => <span className="flex items-center gap-2"><Avatar name={u.name} size="sm" /><span><span className="block font-medium">{u.name}</span><span className="muted text-xs">{u.employee_code} · {u.email}</span></span></span> },
-          { key: 'role_name', header: 'Role' }, { key: 'department_name', header: 'Department' }, { key: 'team_name', header: 'Team' }, { key: 'designation', header: 'Designation' },
+          { key: 'role_name', header: 'Role' }, { key: 'department_name', header: 'Department' }, { key: 'company_name', header: 'Company' }, { key: 'team_name', header: 'Team' },
+          { key: 'designation', header: 'Designation', render: (u: any) => [u.designation, ...(u.additional_designations ?? [])].filter(Boolean).join(' · ') || '—' },
           { key: 'manager_name', header: 'Reports to' }, { key: 'open_tasks', header: 'Open tasks' },
           { key: 'employment_status', header: 'Status', render: (u: any) => !u.is_active ? <StatusBadge status="cancelled" label="Deactivated" /> : <StatusBadge status={u.employment_status === 'exited' ? 'cancelled' : u.employment_status === 'active' ? 'active' : 'paused'} label={humanize(u.employment_status)} /> },
           { key: 'last_login_at', header: 'Last login', render: (u: any) => u.last_login_at ? fromNow(u.last_login_at) : 'never' },
@@ -242,6 +252,7 @@ function UserForm({ item, onClose }: { item: any; onClose: () => void }) {
   const { data: roles = [] } = useApi<any[]>(['roles'], item ? '/org/roles' : null);
   const { data: desig = [] } = useApi<any[]>(['designations'], item ? '/org/designations' : null);
   const { data: teams = [] } = useApi<any[]>(['teams'], item ? '/org/teams' : null);
+  const { data: companies = [] } = useApi<any[]>(['companies'], item ? '/org/companies' : null);
   const { data: tzs = [] } = useApi<string[]>(['timezones'], item ? '/timezones' : null, undefined, { staleTime: Infinity });
   const { data: detail } = useApi<any>(['user', item?.id], item?.id ? `/org/users/${item.id}` : null);
   const { data: skills = [] } = useApi<any[]>(['skills'], item ? '/org/skills' : null);
@@ -249,12 +260,13 @@ function UserForm({ item, onClose }: { item: any; onClose: () => void }) {
   useEffect(() => {
     if (!item) return;
     setErrors({});
-    setF(item.id ? { ...item, role_id: undefined } : { employee_code: '', name: '', email: '', phone: '', role_id: '', department_id: '', designation_id: '', team_id: '', manager_id: null, timezone: 'Asia/Kolkata', employment_status: 'active', joining_date: '', capacity_hours_per_week: 40 });
+    setF(item.id ? { ...item, role_id: undefined } : { employee_code: '', name: '', email: '', phone: '', role_id: '', department_id: '', company_id: '', designation_id: '', additional_designation_ids: [], team_id: '', manager_id: null, timezone: 'Asia/Kolkata', employment_status: 'active', joining_date: '', capacity_hours_per_week: 40 });
   }, [item]);
-  useEffect(() => { if (detail) { setF((x: any) => ({ ...x, role_id: detail.role_id })); setSkillSel(detail.skills.map((s: any) => ({ skill_id: s.id, level: s.level }))); } }, [detail]);
+  useEffect(() => { if (detail) { setF((x: any) => ({ ...x, role_id: detail.role_id, additional_designation_ids: detail.additional_designation_ids ?? [] })); setSkillSel(detail.skills.map((s: any) => ({ skill_id: s.id, level: s.level }))); } }, [detail]);
   const num = (v: any) => (v === '' || v == null ? null : Number(v));
   const save = useAction(async () => {
-    const body: any = { employee_code: f.employee_code, name: f.name, email: f.email, phone: f.phone || null, role_id: Number(f.role_id), department_id: num(f.department_id), designation_id: num(f.designation_id),
+    const body: any = { employee_code: f.employee_code, name: f.name, email: f.email, phone: f.phone || null, role_id: Number(f.role_id), department_id: num(f.department_id), company_id: num(f.company_id), designation_id: num(f.designation_id),
+      additional_designation_ids: (f.additional_designation_ids ?? []).filter((id: number) => id !== num(f.designation_id)),
       team_id: num(f.team_id), manager_id: num(f.manager_id), timezone: f.timezone, employment_status: f.employment_status, joining_date: f.joining_date || null, exit_date: f.exit_date || null, capacity_hours_per_week: Number(f.capacity_hours_per_week) };
     try {
       if (item.id) { await api(`/org/users/${item.id}`, { method: 'PATCH', body }); await api(`/org/users/${item.id}/skills`, { method: 'PUT', body: { skills: skillSel } }); return {}; }
@@ -272,7 +284,17 @@ function UserForm({ item, onClose }: { item: any; onClose: () => void }) {
         <Field label="Role *"><Select value={f.role_id} onChange={(v) => setF({ ...f, role_id: v })} placeholder="Select" options={roles.map((r: any) => ({ value: r.id, label: r.name }))} /></Field>
         <Field label="Department"><Select value={f.department_id} onChange={(v) => setF({ ...f, department_id: v })} placeholder="—" options={depts.map((d: any) => ({ value: d.id, label: d.name }))} /></Field>
         <Field label="Team"><Select value={f.team_id} onChange={(v) => setF({ ...f, team_id: v })} placeholder="—" options={teams.filter((t: any) => !f.department_id || t.department_id === Number(f.department_id)).map((t: any) => ({ value: t.id, label: t.name }))} /></Field>
-        <Field label="Designation"><Select value={f.designation_id} onChange={(v) => setF({ ...f, designation_id: v })} placeholder="—" options={desig.map((d: any) => ({ value: d.id, label: d.title }))} /></Field>
+        <Field label="Company"><Select value={f.company_id ?? ''} onChange={(v) => setF({ ...f, company_id: v })} placeholder="—" options={companies.map((c: any) => ({ value: c.id, label: c.name }))} /></Field>
+        <Field label="Designation (primary)"><Select value={f.designation_id} onChange={(v) => setF({ ...f, designation_id: v })} placeholder="—" options={desig.map((d: any) => ({ value: d.id, label: d.title }))} /></Field>
+        <div className="sm:col-span-2 lg:col-span-3">
+          <span className="label">Additional designations</span>
+          <div className="flex flex-wrap gap-1.5">
+            {desig.filter((d: any) => String(d.id) !== String(f.designation_id)).map((d: any) => {
+              const on = (f.additional_designation_ids ?? []).includes(d.id);
+              return <button key={d.id} type="button" className={clsx('chip', on ? 'chip-on' : 'chip-off')} aria-pressed={on} onClick={() => setF({ ...f, additional_designation_ids: on ? f.additional_designation_ids.filter((x: number) => x !== d.id) : [...(f.additional_designation_ids ?? []), d.id] })}>{d.title}</button>;
+            })}
+          </div>
+        </div>
         <Field label="Reports to"><UserPicker value={f.manager_id} onChange={(v) => setF({ ...f, manager_id: v })} exclude={item?.id ? [item.id] : []} /></Field>
         <Field label="Employment status"><Select value={f.employment_status} onChange={(v) => setF({ ...f, employment_status: v })} options={['active', 'on_leave', 'notice', 'exited'].map((s) => ({ value: s, label: humanize(s) }))} /></Field>
         <Field label="Joining date"><input className="input" type="date" value={f.joining_date ?? ''} onChange={(e) => setF({ ...f, joining_date: e.target.value })} /></Field>
@@ -312,6 +334,37 @@ function UserForm({ item, onClose }: { item: any; onClose: () => void }) {
         )}
       </div>
     </Modal>
+  );
+}
+
+function Companies() {
+  const { can } = useAuth();
+  const { data = [], isLoading } = useApi<any[]>(['companies', 'all'], '/org/companies', { all: 'true' });
+  const [edit, setEdit] = useState<any>(null);
+  const save = useAction((b: any) => (edit?.id ? api(`/org/companies/${edit.id}`, { method: 'PATCH', body: b }) : api('/org/companies', { body: b })),
+    { invalidate: [['companies']], success: 'Company saved', onSuccess: () => setEdit(null) });
+  const toggle = useAction((c: any) => api(`/org/companies/${c.id}`, { method: 'PATCH', body: { is_active: !c.is_active } }), { invalidate: [['companies']], success: 'Updated' });
+  return (
+    <Card title="Companies / business entities" actions={can('org.manage') && <button className="btn-primary btn-sm" onClick={() => setEdit({ name: '', code: '', description: '' })}><Plus className="h-3.5 w-3.5" /> Company</button>} pad={false}>
+      {isLoading ? <Loading /> : !data.length ? <div className="p-5"><Empty icon={Building} title="No companies yet" hint="Add each business entity, then assign employees to it for company-wise reporting." /></div> : (
+        <DataTable rows={data} onRowClick={can('org.manage') ? (c: any) => setEdit(c) : undefined} columns={[
+          { key: 'name', header: 'Company', render: (c: any) => <span className="font-medium">{c.name}{c.description && <span className="muted block text-xs font-normal">{c.description}</span>}</span> },
+          { key: 'code', header: 'Code' }, { key: 'employees', header: 'Active employees' },
+          { key: 'is_active', header: 'Status', render: (c: any) => <StatusBadge status={c.is_active ? 'active' : 'cancelled'} label={c.is_active ? 'Active' : 'Inactive'} /> },
+          ...(can('org.manage') ? [{ key: 'x', header: '', render: (c: any) => <button className="btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); toggle.mutate(c); }}>{c.is_active ? 'Deactivate' : 'Activate'}</button> }] : []),
+        ]} />
+      )}
+      {edit && (
+        <Modal open onClose={() => setEdit(null)} title={edit.id ? `Edit ${edit.name}` : 'New company'}
+          footer={<><button className="btn-secondary" onClick={() => setEdit(null)}>Cancel</button><button className="btn-primary" disabled={edit.name.trim().length < 2 || !edit.code.trim() || save.isPending} onClick={() => save.mutate({ name: edit.name, code: edit.code, description: edit.description || null })}>Save</button></>}>
+          <div className="grid gap-3">
+            <Field label="Name"><input className="input" value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} /></Field>
+            <Field label="Code"><input className="input" value={edit.code} onChange={(e) => setEdit({ ...edit, code: e.target.value })} /></Field>
+            <Field label="Description"><input className="input" value={edit.description ?? ''} onChange={(e) => setEdit({ ...edit, description: e.target.value })} /></Field>
+          </div>
+        </Modal>
+      )}
+    </Card>
   );
 }
 

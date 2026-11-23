@@ -5,7 +5,7 @@ import { AuthUser, can, me, requirePerm } from '../auth/middleware';
 import { assertCanManageTask, canManageTask, canReviewTask, loadVisibleProject, loadVisibleTask, scopeTasks } from '../auth/scope';
 import { audit, diff } from '../lib/audit';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors';
-import { applySort, idParam, paginate, parse, zBoolQ, zCsv, zCsvIds, zDate, zId, zOptId, zOptStr, zPage, zPriority, zTime } from '../lib/http';
+import { applySort, idParam, paginate, parse, zBoolQ, zCsv, zCsvIds, zDate, zId, zOptId, zOptStr, zPage, zPriority, zTime, patchOf } from '../lib/http';
 import { firstOccurrence, isValidTimezone, localToUtc } from '../lib/recurrence';
 import { emitEvent } from '../notifications/events';
 import { armSchedule, onTaskClosed, onTaskDeadlineChanged } from '../notifications/service';
@@ -237,8 +237,7 @@ router.patch('/:id', async (req, res) => {
   const t = await loadVisibleTask(u, idParam(req));
   await assertCanManageTask(u, t);
   if (['completed', 'cancelled'].includes(t.status)) throw badRequest('Closed tasks cannot be edited');
-  const b = parse(taskSchema.omit({ assignee_ids: true, subtasks: true, checklist: true, depends_on: true, reminders: true, recurrence: true, primary_assignee_id: true })
-    .partial().extend({ deadline_change_reason: z.string().max(1000).optional() }), req.body);
+  const b = parse(patchOf(taskSchema.omit({ assignee_ids: true, subtasks: true, checklist: true, depends_on: true, reminders: true, recurrence: true, primary_assignee_id: true })).extend({ deadline_change_reason: z.string().max(1000).optional() }), req.body);
   const { deadline_change_reason, ...patch } = b;
   if (patch.project_id) await loadVisibleProject(u, patch.project_id);
   const deadlineChanged = patch.deadline !== undefined && String(new Date(patch.deadline ?? 0).getTime()) !== String(new Date(t.deadline ?? 0).getTime());

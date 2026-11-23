@@ -76,10 +76,15 @@ router.get('/:id/download', async (req, res) => {
   const ck = !ta && !pd ? await db('checklist_answer_revisions as r').join('checklist_items as i', 'i.id', 'r.item_id').join('checklists as c', 'c.id', 'i.checklist_id')
     .where((w) => w.whereRaw('? = ANY(r.file_ids)', [id]).orWhereRaw(`i.answer_type = 'file' AND r.answer @> ?::jsonb`, [JSON.stringify([id])]))
     .first('c.user_id') : null;
+  const act = !ta && !pd && !ck ? await db('activities').whereRaw('? = ANY(file_ids)', [id]).first('user_id') : null;
   if (ta) await loadVisibleTask(u, ta.task_id);
   else if (pd) await loadVisibleProject(u, pd.project_id);
   else if (ck) {
     const allowed = ck.user_id === u.id || ((can(u, 'checklists.monitor') || can(u, 'eod.view')) && await scopeUsers(db('users as u').where('u.id', ck.user_id), u).first('u.id'));
+    if (!allowed) throw notFound();
+  } else if (act) {
+    // activity attachments: the person who recorded it, or someone with team visibility over them
+    const allowed = act.user_id === u.id || (can(u, 'activities.view_team') && await scopeUsers(db('users as u').where('u.id', act.user_id), u).first('u.id'));
     if (!allowed) throw notFound();
   } else if (file.uploaded_by !== u.id) throw notFound();
   res.setHeader('Content-Type', file.mime_type);

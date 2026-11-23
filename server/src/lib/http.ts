@@ -2,6 +2,18 @@ import { Request } from 'express';
 import { z, ZodTypeAny } from 'zod';
 import { badRequest } from './errors';
 
+/**
+ * Schema for PATCH bodies: every field optional and *without* its create-time default.
+ * (zod's .partial() keeps defaults, so an omitted field would silently be reset to its default.)
+ */
+export function patchOf<T extends z.ZodObject<any>>(schema: T): ReturnType<T['partial']> {
+  const shape: Record<string, ZodTypeAny> = {};
+  for (const [k, v] of Object.entries(schema.shape as Record<string, ZodTypeAny>)) {
+    shape[k] = (v instanceof z.ZodDefault ? (v as any).removeDefault() : v).optional();
+  }
+  return z.object(shape) as unknown as ReturnType<T['partial']>;
+}
+
 export function parse<T extends ZodTypeAny>(schema: T, data: unknown): z.infer<T> {
   const r = schema.safeParse(data);
   if (!r.success) throw badRequest('Validation failed', r.error.flatten());

@@ -27,6 +27,7 @@ const viewQ = z.object({
   report_id: zId.optional(),
   department_id: zId.optional(),
   user_id: zId.optional(),
+  company_id: zId.optional(),
   live: z.enum(['true', 'false']).optional().transform((v) => v === 'true'),
   view: z.enum(['consolidated', 'employee']).default('consolidated'),
   format: z.enum(['json', 'text', 'xlsx', 'pdf']).default('json'),
@@ -54,7 +55,7 @@ router.get('/', async (req, res) => {
   const date = row ? String(row.report_date) : f.date ?? today;
   if (date > today) throw badRequest('Reports cannot be built for future dates');
   const snap = row ? row.data : await buildEodSnapshot(date);
-  const view = deriveEodView(snap, { ...(await viewerFilter(u)), departmentId: f.department_id, userId: f.user_id });
+  const view = deriveEodView(snap, { ...(await viewerFilter(u)), departmentId: f.department_id, userId: f.user_id, companyId: f.company_id });
   const meta = { report_id: row?.id ?? null, generated_at: row?.generated_at ?? null, trigger: row?.trigger ?? null, generated_by_name: row?.generated_by_name ?? null, live: !row };
   if (f.format === 'json') {
     const versions = await db('eod_reports as r').leftJoin('users as g', 'g.id', 'r.generated_by').where('r.report_date', date).orderBy('r.generated_at', 'desc')
@@ -62,7 +63,7 @@ router.get('/', async (req, res) => {
     return res.json({ ...meta, versions, report: view, text: eodText(view, f.view, meta) });
   }
   if (f.format !== 'text' && !can(u, 'reports.export') && !can(u, 'eod.generate')) throw forbidden('You are not allowed to export reports');
-  await audit(req, { action: 'eod.exported', entityType: 'eod_report', entityId: row?.id ?? null, summary: `${f.view} ${f.format} ${date}${f.department_id ? ` dept ${f.department_id}` : ''}${f.user_id ? ` user ${f.user_id}` : ''}` });
+  await audit(req, { action: 'eod.exported', entityType: 'eod_report', entityId: row?.id ?? null, summary: `${f.view} ${f.format} ${date}${f.department_id ? ` dept ${f.department_id}` : ''}${f.user_id ? ` user ${f.user_id}` : ''}${f.company_id ? ` company ${f.company_id}` : ''}` });
   if (f.format === 'text') return res.type('text/plain').send(eodText(view, f.view, meta));
   if (f.format === 'xlsx') return sendEodXlsx(res, view, f.view);
   return sendEodPdf(res, view, f.view, meta);

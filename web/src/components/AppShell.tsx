@@ -2,7 +2,7 @@ import { ReactNode, useEffect, useRef, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import {
-  BarChart3, Bell, BriefcaseBusiness, Building2, CalendarDays, CheckCheck, ChevronsLeft, ChevronsRight, ClipboardCheck, ClipboardList, FileClock,
+  Activity, BarChart3, Bell, BriefcaseBusiness, Building2, CalendarDays, CheckCheck, ChevronsLeft, ChevronsRight, ClipboardCheck, ClipboardList, FileClock,
   GanttChartSquare, Gauge, LayoutDashboard, ListChecks, ListTodo, LogOut, FileBarChart2, MessageSquareText, ShieldCheck as ComplianceIcon, Menu, Moon, NotebookPen, Rocket, Search, Settings, ShieldCheck, Sun, UserRound, Users, Video, X,
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -18,6 +18,7 @@ interface NavItem { to: string; label: string; icon: any; perms?: string[]; end?
 const NAV: { section: string; items: NavItem[] }[] = [
   { section: '', items: [{ to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true }] },
   { section: 'Work', items: [
+    { to: '/my-work', label: 'My daily work', icon: Activity, perms: ['activities.log'] },
     { to: '/tasks', label: 'Tasks', icon: ListTodo, perms: ['tasks.view'] },
     { to: '/checklist', label: 'My checklist', icon: ListChecks, perms: ['checklists.submit'] },
     { to: '/daily-reports', label: 'Daily reports', icon: NotebookPen, perms: ['reports.daily.submit', 'reports.daily.review'] },

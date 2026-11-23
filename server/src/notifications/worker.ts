@@ -9,6 +9,7 @@ import { forEachOrg, generateRecurringTasks, markOverdue, runEscalations } from 
 import { runInOrg } from '../db/knex';
 import { generateChecklistsInOrg, runChecklistEscalationsInOrg, runChecklistRemindersInOrg } from '../questionnaire/engine';
 import { autoGenerateEodInOrg } from '../questionnaire/eod';
+import { materializeSeries, runPersonalTaskRemindersInOrg } from '../daily-work/personal-tasks';
 import { getQueues, QUEUE } from './queues';
 import { deliverLog, fireSchedule, notify, sweepSchedules } from './service';
 
@@ -55,6 +56,8 @@ export async function startWorkers() {
         case 'generate-checklists': return runInOrg(job.data.orgId, () => generateChecklistsInOrg());
         case 'checklist-reminders': return (await forEachOrg(runChecklistRemindersInOrg)) + (await forEachOrg(runChecklistEscalationsInOrg));
         case 'eod-auto': return forEachOrg(() => autoGenerateEodInOrg());
+        case 'personal-tasks': return forEachOrg(() => materializeSeries());
+        case 'personal-task-reminders': return forEachOrg(() => runPersonalTaskRemindersInOrg());
       }
     }, { connection, prefix: config.QUEUE_PREFIX, concurrency: 1 }),
   ];
@@ -71,6 +74,9 @@ export async function startWorkers() {
   await maintenance.upsertJobScheduler('checklists', { every: 5 * 60_000 }, { name: 'checklists' });
   await maintenance.upsertJobScheduler('checklist-reminders', { every: 60_000 }, { name: 'checklist-reminders' });
   await maintenance.upsertJobScheduler('eod-auto', { every: 60_000 }, { name: 'eod-auto' });
+  // Personal daily work: recurring personal task occurrences + reminders
+  await maintenance.upsertJobScheduler('personal-tasks', { every: 5 * 60_000 }, { name: 'personal-tasks' });
+  await maintenance.upsertJobScheduler('personal-task-reminders', { every: 60_000 }, { name: 'personal-task-reminders' });
   logger.info('background workers started');
   return workers;
 }

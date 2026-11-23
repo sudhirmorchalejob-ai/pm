@@ -30,6 +30,8 @@ import { router as files } from './modules/files';
 import { router as questions } from './modules/questions.routes';
 import { router as checklists } from './modules/checklists.routes';
 import { router as eod } from './modules/eod.routes';
+import { router as activities } from './modules/activities.routes';
+import { router as myWork } from './modules/my-work.routes';
 
 export function createApp() {
   const app = express();
@@ -70,6 +72,8 @@ export function createApp() {
   mount('/api/questions', questions, 'Question builder');
   mount('/api/checklists', checklists, 'Daily checklists');
   mount('/api/eod', eod, 'EOD reports');
+  mount('/api/activities', activities, 'Daily activities');
+  mount('/api/my-work', myWork, 'My daily work');
   mount('/api', planning, 'Planning');
   mount('/api', misc, 'Misc');
 

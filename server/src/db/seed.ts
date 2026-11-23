@@ -4,6 +4,7 @@ import { activeOrgIds, baseDb, db, runInOrg } from './knex';
 import { migrate } from './migrate';
 import { PERMISSIONS, PERMISSIONS_V1_COUNT, ROLE_DEFS } from '../auth/permissions';
 import { applyTemplate, seedQuestionnaireDefaults } from '../questionnaire/templates';
+import { seedActivityCategories } from '../daily-work/categories';
 import { logger } from '../lib/logger';
 
 /**
@@ -98,6 +99,7 @@ export async function seedOrganization(_orgId: number) {
     ]);
   }
   await seedQuestionnaireDefaults();
+  await seedActivityCategories();
   await ensureEmployeeHistory();
 
 }

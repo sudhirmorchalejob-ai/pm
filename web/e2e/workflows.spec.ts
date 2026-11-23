@@ -18,7 +18,7 @@ async function logout(page: Page) {
 
 test('no horizontal overflow on key pages', async ({ page }) => {
   await login(page, 'admin@orgpm.dev');
-  for (const path of ['/', '/tasks', '/projects', '/future-projects', '/calendar', '/gantt', '/notifications', '/reports', '/organization', '/settings', '/questions', '/compliance', '/eod', '/checklist']) {
+  for (const path of ['/', '/tasks', '/projects', '/future-projects', '/calendar', '/gantt', '/notifications', '/reports', '/organization', '/settings', '/questions', '/compliance', '/eod', '/checklist', '/my-work', '/my-work?tab=eod', '/my-work?tab=tasks']) {
     await page.goto(path);
     await page.waitForLoadState('networkidle');
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
@@ -119,4 +119,26 @@ test('question builder → employee checklist → EOD report', async ({ page }, 
   await expect(page.getByText('EOD report generated')).toBeVisible();
   await page.getByRole('button', { name: 'Employee-wise' }).click();
   await expect(page.locator('dt', { hasText: text }).locator('xpath=following-sibling::dd')).toHaveText('Yes');
+});
+
+test('quick daily activity → timeline → personal EOD report (works on phones too)', async ({ page }) => {
+  const text = `E2E guided on API integration ${Date.now()}`;
+  await login(page, 'hod.it@orgpm.dev');
+  await page.getByRole('button', { name: 'Add Daily Activity' }).first().click();
+  const sheet = page.getByRole('dialog');
+  await sheet.getByRole('button', { name: 'Guided Employee to Fix Technical Issue' }).click();
+  await sheet.getByLabel('What did you do?').fill(text);
+  await sheet.getByPlaceholder('Search employees…').fill('Ishita');
+  await sheet.getByRole('button', { name: /Ishita Gupta/ }).click();
+  await sheet.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText('Activity saved')).toBeVisible();
+  await page.goto('/my-work');
+  await expect(page.getByText(text)).toBeVisible();
+  await page.goto('/my-work?tab=eod');
+  const gen = page.getByRole('button', { name: /Generate report|Regenerate from entries/ });
+  await gen.click();
+  const dlg = page.getByRole('dialog');
+  if (await dlg.isVisible().catch(() => false)) await dlg.getByRole('button', { name: 'Regenerate' }).click();
+  await expect(page.getByLabel('Report text')).toHaveValue(new RegExp(text));
+  await expect(page.getByLabel('Report text')).toHaveValue(/EMPLOYEES ASSISTED\s+• Ishita Gupta/);
 });

@@ -4,7 +4,7 @@ import { db } from '../db/knex';
 import { me, requirePerm } from '../auth/middleware';
 import { audit, diff } from '../lib/audit';
 import { badRequest, notFound } from '../lib/errors';
-import { idParam, parse, zBoolQ, zDate, zId, zOptId, zTime } from '../lib/http';
+import { idParam, parse, zBoolQ, zDate, zId, zOptId, zTime, patchOf } from '../lib/http';
 import { ANSWER_TYPES, CONDITION_OPS, REPORT_TAGS, validateOptions } from '../questionnaire/answers';
 import { applicableQuestions, loadQuestionCtx, requestChecklistSync } from '../questionnaire/engine';
 import { describeFrequency, validateFrequency } from '../questionnaire/schedule';
@@ -45,7 +45,7 @@ router.patch('/sections/:id', async (req, res) => {
   const id = idParam(req);
   const before = await db('question_sections').where({ id }).whereNull('deleted_at').first();
   if (!before) throw notFound('Section not found');
-  const b = parse(sectionSchema.partial(), req.body);
+  const b = parse(patchOf(sectionSchema), req.body);
   const [row] = await db('question_sections').where({ id }).update({ ...b, updated_by: me(req).id, updated_at: db.fn.now() }).returning('*');
   const d = diff(before, b);
   await audit(req, { action: 'question_section.updated', entityType: 'question_section', entityId: id, before: d.before, after: d.after, summary: row.name });
@@ -260,7 +260,7 @@ router.patch('/:id', async (req, res) => {
   const id = idParam(req);
   const before = await db('questions').where({ id }).whereNull('deleted_at').first();
   if (!before) throw notFound('Question not found');
-  const b = parse(questionSchema.partial(), req.body);
+  const b = parse(patchOf(questionSchema), req.body);
   await validateQuestion(b, before);
   if (b.assignment) await validateAssignment(b.assignment);
   const contentChanged = ['text', 'answer_type', 'options'].some((k) => k in b && JSON.stringify((b as any)[k]) !== JSON.stringify(before[k]));
@@ -424,7 +424,7 @@ router.patch('/template-items/:id', async (req, res) => {
   const id = idParam(req);
   const before = await db('question_template_items').where({ id }).first();
   if (!before) throw notFound('Template question not found');
-  const b = parse(templateItemSchema.partial(), req.body);
+  const b = parse(patchOf(templateItemSchema), req.body);
   const err = validateOptions((b.answer_type ?? before.answer_type) as any, b.options ?? before.options);
   if (err) throw badRequest(err);
   const [row] = await db('question_template_items').where({ id }).update({ ...b, ...(b.options ? { options: JSON.stringify(b.options) } : {}) }).returning('*');
@@ -491,7 +491,7 @@ router.patch('/escalation-rules/:id', async (req, res) => {
   const id = idParam(req);
   const before = await db('checklist_escalation_rules').where({ id }).first();
   if (!before) throw notFound('Rule not found');
-  const b = parse(escSchema.partial(), req.body);
+  const b = parse(patchOf(escSchema), req.body);
   const [row] = await db('checklist_escalation_rules').where({ id }).update({ ...b, updated_at: db.fn.now() }).returning('*');
   const d = diff(before, b);
   await audit(req, { action: 'checklist_escalation_rule.updated', entityType: 'checklist_escalation_rule', entityId: id, before: d.before, after: d.after, summary: row.name });

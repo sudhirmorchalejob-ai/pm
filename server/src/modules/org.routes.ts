@@ -8,11 +8,12 @@ import { assertCanSeeUser, scopeUsers } from '../auth/scope';
 import { revokeAllForUser } from '../auth/tokens';
 import { audit, diff } from '../lib/audit';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors';
-import { applySort, idParam, paginate, parse, zBoolQ, zDate, zId, zOptId, zOptStr, zPage } from '../lib/http';
+import { applySort, idParam, paginate, parse, zBoolQ, zDate, zId, zOptId, zOptStr, zPage, patchOf } from '../lib/http';
 import { isValidTimezone } from '../lib/recurrence';
 import { passwordSchema } from './auth.routes';
 import { assertActiveUsers, recordDepartmentChange, recordStatusChange } from '../lib/employees';
 import { dropUntouchedChecklists, requestChecklistSync } from '../questionnaire/engine';
+import { loadStarterStructure, optionsSchema, runTeamSetup, structureSchema } from '../daily-work/team-setup';
 
 export const router = Router();
 
@@ -49,7 +50,7 @@ router.post('/departments', requirePerm('org.manage'), async (req, res) => {
 
 router.patch('/departments/:id', requirePerm('org.manage'), async (req, res) => {
   const id = idParam(req);
-  const body = parse(deptSchema.partial(), req.body);
+  const body = parse(patchOf(deptSchema), req.body);
   const before = await db('departments').where({ id }).first();
   if (!before) throw notFound();
   if (body.hod_id && body.hod_id !== before.hod_id) await assertActiveUsers([body.hod_id], 'a head-of-department role');
@@ -116,6 +117,61 @@ router.post('/departments/:id/members', requirePerm('org.manage', 'users.manage'
 });
 
 // ===================================================================== designations
+// ===================================================================== companies (business entities)
+router.get('/companies', async (req, res) => {
+  const all = req.query.all === 'true';
+  const q = db('companies as c').whereNull('c.deleted_at').orderBy('c.name').select('c.*',
+    db.raw('(SELECT count(*) FROM users u WHERE u.company_id = c.id AND u.is_active AND u.deleted_at IS NULL)::int AS employees'));
+  if (!all) q.where('c.is_active', true);
+  res.json(await q);
+});
+const companySchema = z.object({ name: z.string().trim().min(2).max(120), code: z.string().trim().min(1).max(30), description: zOptStr, is_active: z.boolean().optional() });
+async function assertCompanyUnique(b: { name?: string; code?: string }, exceptId?: number) {
+  if (!b.name && !b.code) return;
+  const q = db('companies').whereNull('deleted_at').where((w) => {
+    if (b.name) w.orWhereRaw('lower(name) = lower(?)', [b.name]);
+    if (b.code) w.orWhereRaw('lower(code) = lower(?)', [b.code]);
+  });
+  if (exceptId) q.whereNot('id', exceptId);
+  if (await q.first('id')) throw conflict('A company with this name or code already exists');
+}
+router.post('/companies', requirePerm('org.manage'), async (req, res) => {
+  const b = parse(companySchema, req.body);
+  await assertCompanyUnique(b);
+  const [row] = await db('companies').insert({ ...b, code: b.code.toUpperCase() }).returning('*');
+  await audit(req, { action: 'company.created', entityType: 'company', entityId: row.id, summary: row.name, after: b });
+  res.status(201).json(row);
+});
+router.patch('/companies/:id', requirePerm('org.manage'), async (req, res) => {
+  const id = idParam(req);
+  const b = parse(patchOf(companySchema), req.body);
+  const before = await db('companies').where({ id }).whereNull('deleted_at').first();
+  if (!before) throw notFound();
+  await assertCompanyUnique(b, id);
+  const [row] = await db('companies').where({ id }).update({ ...b, ...(b.code ? { code: b.code.toUpperCase() } : {}), updated_at: db.fn.now() }).returning('*');
+  const d = diff(before, b);
+  await audit(req, { action: b.is_active === false ? 'company.deactivated' : 'company.updated', entityType: 'company', entityId: id, summary: row.name, before: d.before, after: d.after });
+  res.json(row);
+});
+
+// ===================================================================== team structure setup (idempotent, previewable)
+router.get('/setup/team-structure/starter', requirePerm('users.manage'), async (_req, res) => {
+  res.json(loadStarterStructure());
+});
+router.post('/setup/team-structure', requirePerm('users.manage'), async (req, res) => {
+  const u = me(req);
+  if (!can(u, 'org.manage')) throw forbidden('Team setup needs both employee and organization management permissions');
+  const body = parse(z.object({ structure: structureSchema.optional(), options: optionsSchema.default({ dry_run: true, apply_templates: true }) }), req.body);
+  const structure = body.structure ?? loadStarterStructure();
+  const result = await runTeamSetup(u, structure, body.options);
+  if (!body.options.dry_run) {
+    await requestChecklistSync();
+    invalidateUserCache();
+    await audit(req, { action: 'org.team_structure_applied', entityType: 'organization', summary: Object.entries(result.summary).map(([k, v]) => `${k}: ${v}`).join(', '), after: { summary: result.summary, plan: result.plan } });
+  }
+  res.json(result);
+});
+
 router.get('/designations', requirePerm('org.view', 'users.view'), async (_req, res) => {
   res.json(await db('designations as g').leftJoin('departments as d', 'd.id', 'g.department_id')
     .select('g.*', 'd.name as department_name').orderBy(['g.level', 'g.title']));
@@ -127,7 +183,7 @@ router.post('/designations', requirePerm('org.manage'), async (req, res) => {
   res.status(201).json(row);
 });
 router.patch('/designations/:id', requirePerm('org.manage'), async (req, res) => {
-  const [row] = await db('designations').where({ id: idParam(req) }).update(parse(desigSchema.partial(), req.body)).returning('*');
+  const [row] = await db('designations').where({ id: idParam(req) }).update(parse(patchOf(desigSchema), req.body)).returning('*');
   if (!row) throw notFound();
   res.json(row);
 });
@@ -174,7 +230,7 @@ router.patch('/teams/:id', async (req, res) => {
   const before = await db('teams').where({ id }).first();
   if (!before) throw notFound();
   await assertDeptManager(req, before.department_id);
-  const body = parse(teamSchema.partial(), req.body);
+  const body = parse(patchOf(teamSchema), req.body);
   if (body.leader_id && body.leader_id !== before.leader_id) await assertActiveUsers([body.leader_id], 'a team-leader role');
   const [row] = await db('teams').where({ id }).update({ ...body, updated_at: db.fn.now() }).returning('*');
   if (body.leader_id && body.leader_id !== before.leader_id) {
@@ -224,9 +280,10 @@ router.post('/skills', requirePerm('users.manage', 'org.manage'), async (req, re
 router.get('/directory', async (req, res) => {
   const { q, department_id } = parse(z.object({ q: z.string().max(100).optional(), department_id: zId.optional() }), req.query);
   const qb = db('users as u').leftJoin('departments as d', 'd.id', 'u.department_id').leftJoin('designations as g', 'g.id', 'u.designation_id')
-    .join('roles as r', 'r.id', 'u.role_id')
+    .join('roles as r', 'r.id', 'u.role_id').leftJoin('companies as co', 'co.id', 'u.company_id')
     .whereNull('u.deleted_at').where('u.is_active', true)
-    .select('u.id', 'u.name', 'u.employee_code', 'u.department_id', 'd.name as department_name', 'g.title as designation', 'r.key as role', 'u.team_id', 'u.avatar_url')
+    .select('u.id', 'u.name', 'u.employee_code', 'u.department_id', 'd.name as department_name', 'g.title as designation', 'r.key as role', 'u.team_id', 'u.avatar_url',
+      'u.company_id', 'co.name as company_name')
     .orderBy('u.name').limit(1000);
   if (q) qb.where((w) => w.whereILike('u.name', `%${q}%`).orWhereILike('u.employee_code', `%${q}%`));
   if (department_id) qb.where('u.department_id', department_id);
@@ -239,6 +296,7 @@ const userListQ = z.object({
   q: z.string().max(100).optional(),
   department_id: zId.optional(),
   team_id: zId.optional(),
+  company_id: zId.optional(),
   role: z.string().optional(),
   status: z.enum(['active', 'on_leave', 'notice', 'exited']).optional(),
   active: zBoolQ,
@@ -250,9 +308,10 @@ router.get('/users', requirePerm('users.view'), async (req, res) => {
   const q = scopeUsers(db('users as u'), me(req))
     .join('roles as r', 'r.id', 'u.role_id').leftJoin('departments as d', 'd.id', 'u.department_id')
     .leftJoin('teams as t', 't.id', 'u.team_id').leftJoin('designations as g', 'g.id', 'u.designation_id')
-    .leftJoin('users as m', 'm.id', 'u.manager_id')
+    .leftJoin('users as m', 'm.id', 'u.manager_id').leftJoin('companies as co', 'co.id', 'u.company_id')
     .whereNull('u.deleted_at')
-    .select('u.id', 'u.employee_code', 'u.name', 'u.email', 'u.phone', 'u.department_id', 'd.name as department_name', 'u.team_id',
+    .select('u.id', 'u.employee_code', 'u.name', 'u.email', 'u.phone', 'u.department_id', 'd.name as department_name', 'u.team_id', 'u.company_id', 'co.name as company_name',
+      db.raw(`coalesce((SELECT array_agg(g2.title ORDER BY ud.created_at, g2.id) FROM user_designations ud JOIN designations g2 ON g2.id = ud.designation_id WHERE ud.user_id = u.id), '{}') AS additional_designations`),
       't.name as team_name', 'u.designation_id', 'g.title as designation', 'u.manager_id', 'm.name as manager_name', 'r.key as role', 'r.name as role_name',
       'u.employment_status', 'u.joining_date', 'u.exit_date', 'u.is_active', 'u.timezone', 'u.capacity_hours_per_week', 'u.last_login_at',
       db.raw(`(SELECT count(*) FROM task_assignees ta JOIN tasks tk ON tk.id = ta.task_id WHERE ta.user_id = u.id AND tk.deleted_at IS NULL
@@ -260,6 +319,7 @@ router.get('/users', requirePerm('users.view'), async (req, res) => {
   if (f.q) q.where((w) => w.whereILike('u.name', `%${f.q}%`).orWhereILike('u.email', `%${f.q}%`).orWhereILike('u.employee_code', `%${f.q}%`));
   if (f.department_id) q.where('u.department_id', f.department_id);
   if (f.team_id) q.where('u.team_id', f.team_id);
+  if (f.company_id) q.where('u.company_id', f.company_id);
   if (f.role) q.where('r.key', f.role);
   if (f.status) q.where('u.employment_status', f.status);
   if (f.active !== undefined) q.where('u.is_active', f.active);
@@ -272,8 +332,9 @@ router.get('/users/:id', requirePerm('users.view'), async (req, res) => {
   await assertCanSeeUser(me(req), id);
   const u = await db('users as u').join('roles as r', 'r.id', 'u.role_id').leftJoin('departments as d', 'd.id', 'u.department_id')
     .leftJoin('teams as t', 't.id', 'u.team_id').leftJoin('designations as g', 'g.id', 'u.designation_id')
-    .leftJoin('users as m', 'm.id', 'u.manager_id').where('u.id', id)
+    .leftJoin('users as m', 'm.id', 'u.manager_id').leftJoin('companies as co', 'co.id', 'u.company_id').where('u.id', id)
     .first('u.id', 'u.employee_code', 'u.name', 'u.email', 'u.phone', 'u.department_id', 'd.name as department_name', 'u.team_id', 't.name as team_name',
+      'u.company_id', 'co.name as company_name',
       'u.designation_id', 'g.title as designation', 'u.manager_id', 'm.name as manager_name', 'r.key as role', 'r.name as role_name', 'u.role_id',
       'u.employment_status', 'u.joining_date', 'u.exit_date', 'u.is_active', 'u.timezone', 'u.capacity_hours_per_week', 'u.created_at', 'u.last_login_at');
   const [skills, history, reports, projects, departmentHistory, statusHistory] = await Promise.all([
@@ -287,7 +348,8 @@ router.get('/users/:id', requirePerm('users.view'), async (req, res) => {
       .where('h.user_id', id).orderBy('h.effective_from', 'desc').select('h.*', 'd.name as department_name', 't.name as team_name', 'c.name as changed_by_name'),
     db('employee_status_history as h').leftJoin('users as c', 'c.id', 'h.changed_by').where('h.user_id', id).orderBy('h.changed_at', 'desc').select('h.*', 'c.name as changed_by_name'),
   ]);
-  res.json({ ...u, skills, reporting_history: history, direct_reports: reports, projects, department_history: departmentHistory, status_history: statusHistory });
+  const extraDesignations = await db('user_designations as ud').join('designations as g', 'g.id', 'ud.designation_id').where('ud.user_id', id).orderBy(['ud.created_at', 'g.id']).select('g.id', 'g.title');
+  res.json({ ...u, additional_designations: extraDesignations, additional_designation_ids: extraDesignations.map((g: any) => g.id), skills, reporting_history: history, direct_reports: reports, projects, department_history: departmentHistory, status_history: statusHistory });
 });
 
 const userSchema = z.object({
@@ -298,6 +360,8 @@ const userSchema = z.object({
   role_id: zId,
   department_id: zOptId,
   designation_id: zOptId,
+  additional_designation_ids: z.array(zId).max(10).optional(),
+  company_id: zOptId,
   team_id: zOptId,
   manager_id: zOptId,
   timezone: z.string().max(64).optional(),
@@ -307,6 +371,17 @@ const userSchema = z.object({
   capacity_hours_per_week: z.number().min(0).max(80).optional(),
   is_active: z.boolean().optional(),
 });
+
+async function writeAdditionalDesignations(userId: number, ids: number[] | undefined, primary: number | null | undefined) {
+  if (ids === undefined) return;
+  const want = [...new Set(ids)].filter((x) => x !== primary);
+  if (want.length && (await db('designations').whereIn('id', want).pluck('id')).length !== want.length) throw badRequest('Unknown designation');
+  await db('user_designations').where({ user_id: userId }).whereNotIn('designation_id', want.length ? want : [0]).del();
+  if (want.length) await db('user_designations').insert(want.map((designation_id) => ({ user_id: userId, designation_id }))).onConflict(['user_id', 'designation_id']).ignore();
+}
+async function assertCompany(id: number | null | undefined) {
+  if (id && !(await db('companies').where({ id, is_active: true }).whereNull('deleted_at').first('id'))) throw badRequest('Unknown or inactive company');
+}
 
 async function guardRoleAssignment(req: any, roleId: number) {
   const role = await db('roles').where({ id: roleId }).first();
@@ -325,12 +400,14 @@ router.post('/users', requirePerm('users.manage'), async (req, res) => {
   if (body.timezone && !isValidTimezone(body.timezone)) throw badRequest('Unknown timezone');
   if (await db('users').where({ email: body.email }).orWhere({ employee_code: body.employee_code }).first()) throw conflict('Email or employee code already in use');
   // If no password given, generate a temporary one the admin hands over; user must change it on first login.
+  await assertCompany(body.company_id);
   const tempPassword = body.password ?? `Tmp-${crypto.randomBytes(5).toString('hex')}1`;
-  const { password: _p, ...rest } = body;
+  const { password: _p, additional_designation_ids: extraDesig, ...rest } = body;
   const [row] = await db('users').insert({
     ...rest, timezone: body.timezone ?? 'Asia/Kolkata', password_hash: await bcrypt.hash(tempPassword, 12), must_change_password: !body.password,
   }).returning(['id', 'name', 'email', 'employee_code']);
   await db('user_notification_preferences').insert({ user_id: row.id }).onConflict('user_id').ignore();
+  await writeAdditionalDesignations(row.id, extraDesig, body.designation_id);
   if (body.manager_id) await recordManagerChange(row.id, body.manager_id, me(req).id);
   await recordDepartmentChange(row.id, body.department_id ?? null, body.team_id ?? null, me(req).id, 'Joined');
   await recordStatusChange(row.id, body.is_active ?? true, body.employment_status ?? 'active', me(req).id, 'Employee created');
@@ -341,7 +418,7 @@ router.post('/users', requirePerm('users.manage'), async (req, res) => {
 
 router.patch('/users/:id', requirePerm('users.manage'), async (req, res) => {
   const id = idParam(req);
-  const body = parse(userSchema.partial(), req.body);
+  const body = parse(patchOf(userSchema), req.body);
   const before = await db('users').where({ id }).whereNull('deleted_at').first();
   if (!before) throw notFound();
   const target = await db('roles').where({ id: before.role_id }).first('rank');
@@ -349,11 +426,15 @@ router.patch('/users/:id', requirePerm('users.manage'), async (req, res) => {
   if (body.role_id && body.role_id !== before.role_id) await guardRoleAssignment(req, body.role_id);
   if (body.timezone && !isValidTimezone(body.timezone)) throw badRequest('Unknown timezone');
   if (body.manager_id === id) throw badRequest('A user cannot report to themselves');
+  if (body.company_id !== undefined && body.company_id !== before.company_id) await assertCompany(body.company_id);
+  const extraDesig = body.additional_designation_ids;
+  delete body.additional_designation_ids;
   if (body.employment_status === 'exited' && !body.exit_date && !before.exit_date) body.exit_date = new Date().toISOString().slice(0, 10);
   const patch: any = { ...body, updated_at: db.fn.now() };
   if (body.employment_status === 'exited') patch.is_active = false;
   if (patch.is_active === true && !before.is_active && body.employment_status === undefined && before.employment_status === 'exited') patch.employment_status = 'active';
   await db('users').where({ id }).update(patch);
+  await writeAdditionalDesignations(id, extraDesig, body.designation_id !== undefined ? body.designation_id : before.designation_id);
   if (body.manager_id !== undefined && body.manager_id !== before.manager_id) await recordManagerChange(id, body.manager_id ?? null, me(req).id);
   const newDept = body.department_id !== undefined ? body.department_id ?? null : before.department_id;
   const newTeam = body.team_id !== undefined ? body.team_id ?? null : before.team_id;
@@ -367,6 +448,7 @@ router.patch('/users/:id', requirePerm('users.manage'), async (req, res) => {
   invalidateUserCache(id);
   if (transferred || statusChanged) await requestChecklistSync();
   const d = diff(before, body);
+  if (extraDesig !== undefined) { d.after.additional_designation_ids = extraDesig; d.changed.push('additional_designation_ids'); }
   const action = newActive !== before.is_active ? (newActive ? 'user.activated' : 'user.deactivated')
     : d.changed.includes('role_id') ? 'user.role_changed' : transferred ? 'user.department_transferred' : 'user.updated';
   await audit(req, { action, entityType: 'user', entityId: id, before: d.before, after: d.after });

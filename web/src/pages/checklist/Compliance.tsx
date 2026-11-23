@@ -30,15 +30,18 @@ function Overview() {
   const [user, setUser] = useState<number | null>(null);
   const [status, setStatus] = useState('');
   const [history, setHistory] = useState<number | null>(null);
+  const [company, setCompany] = useState('');
   const { data: depts = [] } = useApi<any[]>(['departments'], '/org/departments');
-  const { data, isLoading, error, refetch } = useApi<any>(['compliance', from, to, dept, user, status], '/checklists/dashboard', { from, to, department_id: dept, user_id: user, status });
+  const { data: companies = [] } = useApi<any[]>(['companies'], '/org/companies');
+  const { data, isLoading, error, refetch } = useApi<any>(['compliance', from, to, dept, company, user, status], '/checklists/dashboard', { from, to, department_id: dept, company_id: company || undefined, user_id: user, status });
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
         <Field label="From"><input className="input" type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} /></Field>
         <Field label="To"><input className="input" type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} /></Field>
         <Field label="Department"><Select value={dept} onChange={setDept} placeholder="All departments" options={depts.map((d: any) => ({ value: d.id, label: d.name }))} /></Field>
+        {companies.length > 0 && <Field label="Company"><Select value={company} onChange={setCompany} placeholder="All companies" options={companies.map((c: any) => ({ value: c.id, label: c.name }))} /></Field>}
         <Field label="Status"><Select value={status} onChange={setStatus} placeholder="Any status" options={[{ value: 'submitted', label: 'Completed' }, { value: 'in_progress', label: 'In progress' }, { value: 'pending', label: 'Not started' }, { value: 'overdue', label: 'Overdue' }, { value: 'late', label: 'Completed late' }]} /></Field>
         <Field label="Employee" className="col-span-2 md:col-span-1"><UserPicker value={user} onChange={setUser} placeholder="All employees" departmentId={dept ? Number(dept) : null} /></Field>
       </div>
@@ -111,13 +114,16 @@ function ByDay() {
   const [status, setStatus] = useState('');
   const [q, setQ] = useState('');
   const [view, setView] = useState<{ userId: number; date: string } | null>(null);
+  const [company, setCompany] = useState('');
   const { data: depts = [] } = useApi<any[]>(['departments'], '/org/departments');
-  const { data, isLoading } = useApi<any>(['checklist-team', date, dept, status, q], '/checklists/team', { date, department_id: dept, status, q });
+  const { data: companies = [] } = useApi<any[]>(['companies'], '/org/companies');
+  const { data, isLoading } = useApi<any>(['checklist-team', date, dept, company, status, q], '/checklists/team', { date, department_id: dept, company_id: company || undefined, status, q });
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
         <Field label="Date"><input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
         <Field label="Department"><Select value={dept} onChange={setDept} placeholder="All departments" options={depts.map((d: any) => ({ value: d.id, label: d.name }))} /></Field>
+        <Field label="Company"><Select value={company} onChange={setCompany} placeholder="All companies" options={companies.map((c: any) => ({ value: c.id, label: c.name }))} /></Field>
         <Field label="Status"><Select value={status} onChange={setStatus} placeholder="Any status" options={[{ value: 'submitted', label: 'Completed' }, { value: 'in_progress', label: 'In progress' }, { value: 'pending', label: 'Not started' }, { value: 'overdue', label: 'Overdue' }, { value: 'none', label: 'No checklist' }]} /></Field>
         <Field label="Search"><SearchInput value={q} onChange={setQ} placeholder="Employee name" /></Field>
       </div>

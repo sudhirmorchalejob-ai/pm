@@ -15,6 +15,7 @@ RUN addgroup -S app && adduser -S app -G app && mkdir -p /app/uploads && chown a
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY migrations ./migrations
+COPY setup ./setup
 COPY package.json ./
 USER app
 EXPOSE 4000
